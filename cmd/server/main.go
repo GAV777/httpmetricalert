@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"html/template"
 	"log"
 	"net/http"
@@ -218,24 +219,35 @@ func noDoubleSlashes(next http.Handler) http.Handler {
 
 // === Основная функция — ТОЧКА ВХОДА ===
 func main() {
+	// Определяем флаг -a для адреса сервера
+	addr := flag.String("a", "localhost:8080", "адрес эндпоинта HTTP-сервера")
+
+	// Парсим флаги
+	flag.Parse()
+
+	// Проверяем на неизвестные флаги
+	if len(flag.Args()) > 0 {
+		log.Fatalf("неизвестные аргументы командной строки: %v", flag.Args())
+	}
+
 	storage := NewMemStorage()
 	r := chi.NewRouter()
 
 	// Middleware
 	r.Use(middleware.Recoverer)
-	r.Use(noDoubleSlashes) // блокируем // до маршрутизации
+	r.Use(noDoubleSlashes)
 
 	// Валидные маршруты
 	r.Post("/update/{type}/{name}/{value}", storage.UpdateHandler)
 	r.Get("/value/{type}/{name}", storage.GetValueHandler)
 	r.Get("/", storage.ListMetricsHandler)
 
-	// Глобальный 404 для всех неизвестных путей
+	// Глобальный 404
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
 
 	// Запуск сервера
-	log.Println("🚀 Starting server on :8080 with go-chi/chi")
-	log.Fatal(http.ListenAndServe(":8080", r))
+	log.Printf("🚀 Starting server on %s", *addr)
+	log.Fatal(http.ListenAndServe(*addr, r))
 }
