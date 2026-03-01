@@ -95,12 +95,6 @@ func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Проверяем наличие двойных слешей в пути
-	if strings.Contains(r.URL.Path, "//") {
-		http.Error(w, "Not Found", http.StatusNotFound)
-		return
-	}
-
 	if r.Header.Get("Content-Type") != "text/plain" {
 		http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
 		return
@@ -206,34 +200,40 @@ func (s *MemStorage) ListMetricsHandler(w http.ResponseWriter, r *http.Request) 
 	_ = t.Execute(w, metrics)
 }
 
-// CatchAllHandler обрабатывает все запросы, которые не подошли под основные маршруты
-func CatchAllHandler(w http.ResponseWriter, r *http.Request) {
-	// Если в пути есть двойной слеш или это запрос к /update/ с некорректным форматом
-	if strings.Contains(r.URL.Path, "//") || strings.HasPrefix(r.URL.Path, "/update/") {
+// --- НОВЫЙ КОД: Обёртка для перехвата путей с двойными слешами ---
+// doubleSlashHandler проверяет путь и либо отклоняет запрос, либо передаёт его дальше
+type doubleSlashHandler struct {
+	router http.Handler
+}
+
+func (h *doubleSlashHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Проверяем, содержит ли путь двойной слеш
+	if strings.Contains(r.URL.Path, "//") {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
-	http.NotFound(w, r)
+	// Если путь чистый, передаём управление основному роутеру
+	h.router.ServeHTTP(w, r)
 }
 
 func main() {
 	storage := NewMemStorage()
 	r := mux.NewRouter()
 
-	// Отключаем автоматическую нормализацию путей
+	// Настройки роутера
 	r.StrictSlash(false)
 	r.SkipClean(true)
 	r.UseEncodedPath()
 
-	// Основные маршруты
+	// Регистрация маршрутов
 	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
 	r.HandleFunc("/value/{type}/{name}", storage.GetValueHandler).Methods("GET")
 	r.HandleFunc("/", storage.ListMetricsHandler).Methods("GET")
 
-	// Обработчик для всех остальных путей (включая пути с двойными слешами)
-	r.PathPrefix("/").HandlerFunc(CatchAllHandler)
+	// Создаём обёртку, которая будет проверять двойные слеши ДО mux
+	wrappedHandler := &doubleSlashHandler{router: r}
 
-	// Запуск сервера
+	// Запуск сервера с обёрнутым обработчиком
 	log.Println("Starting server on :8080")
-	log.Fatal(http.ListenAndServe(":8080", r))
+	log.Fatal(http.ListenAndServe(":8080", wrappedHandler))
 }
