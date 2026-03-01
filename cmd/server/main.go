@@ -100,6 +100,12 @@ func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Дополнительная проверка на двойные слеши в пути
+	if strings.Contains(r.URL.Path, "//") {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
 	vars := mux.Vars(r)
 	name := vars["name"]
 	valueStr := vars["value"]
@@ -200,19 +206,37 @@ func (s *MemStorage) ListMetricsHandler(w http.ResponseWriter, r *http.Request) 
 	_ = t.Execute(w, metrics)
 }
 
-// --- НОВЫЙ КОД: Обёртка для перехвата путей с двойными слешами ---
-// doubleSlashHandler проверяет путь и либо отклоняет запрос, либо передаёт его дальше
-type doubleSlashHandler struct {
-	router http.Handler
+// Кастомный обработчик для перехвата всех запросов
+type customHandler struct {
+	router *mux.Router
 }
 
-func (h *doubleSlashHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Проверяем, содержит ли путь двойной слеш
+func (h *customHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Проверяем наличие двойных слешей в пути
 	if strings.Contains(r.URL.Path, "//") {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
-	// Если путь чистый, передаём управление основному роутеру
+
+	// Проверяем, начинается ли путь с /update/ и имеет ли неправильный формат
+	if strings.HasPrefix(r.URL.Path, "/update/") {
+		// Разбиваем путь на части
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		// Для пути /update/type/name/value должно быть ровно 4 части
+		if len(parts) != 4 {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
+		// Проверяем, что все части не пустые
+		for _, part := range parts {
+			if part == "" {
+				http.Error(w, "Not Found", http.StatusNotFound)
+				return
+			}
+		}
+	}
+
+	// Передаем запрос роутеру
 	h.router.ServeHTTP(w, r)
 }
 
@@ -220,7 +244,7 @@ func main() {
 	storage := NewMemStorage()
 	r := mux.NewRouter()
 
-	// Настройки роутера
+	// Отключаем строгость и очистку путей
 	r.StrictSlash(false)
 	r.SkipClean(true)
 	r.UseEncodedPath()
@@ -230,10 +254,10 @@ func main() {
 	r.HandleFunc("/value/{type}/{name}", storage.GetValueHandler).Methods("GET")
 	r.HandleFunc("/", storage.ListMetricsHandler).Methods("GET")
 
-	// Создаём обёртку, которая будет проверять двойные слеши ДО mux
-	wrappedHandler := &doubleSlashHandler{router: r}
+	// Оборачиваем роутер в кастомный обработчик
+	handler := &customHandler{router: r}
 
-	// Запуск сервера с обёрнутым обработчиком
+	// Запуск сервера
 	log.Println("Starting server on :8080")
-	log.Fatal(http.ListenAndServe(":8080", wrappedHandler))
+	log.Fatal(http.ListenAndServe(":8080", handler))
 }
