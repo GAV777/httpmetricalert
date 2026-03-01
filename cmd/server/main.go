@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -91,26 +90,18 @@ func (s *MemStorage) GetAllMetrics() []Metric {
 
 // UpdateHandler обрабатывает POST /update/{type}/{name}/{value}
 func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if r.Header.Get("Content-Type") != "text/plain" {
-		http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
-		return
-	}
-
+	// Убираем проверку Content-Type
+	metricType := chi.URLParam(r, "type")
 	name := chi.URLParam(r, "name")
 	valueStr := chi.URLParam(r, "value")
 
-	// Проверка: имя и значение не пустые
+	// Проверка на пустые значения
 	if name == "" || valueStr == "" {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
 
-	switch chi.URLParam(r, "type") {
+	switch metricType {
 	case "gauge":
 		value, err := strconv.ParseFloat(valueStr, 64)
 		if err != nil {
@@ -138,6 +129,7 @@ func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 
 // GetValueHandler обрабатывает GET /value/{type}/{name}
 func (s *MemStorage) GetValueHandler(w http.ResponseWriter, r *http.Request) {
+	metricType := chi.URLParam(r, "type")
 	name := chi.URLParam(r, "name")
 
 	if name == "" {
@@ -145,7 +137,7 @@ func (s *MemStorage) GetValueHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch chi.URLParam(r, "type") {
+	switch metricType {
 	case "gauge":
 		value, ok := s.GetGauge(name)
 		if !ok {
@@ -199,37 +191,34 @@ func (s *MemStorage) ListMetricsHandler(w http.ResponseWriter, r *http.Request) 
 	_ = t.Execute(w, metrics)
 }
 
-// === Middleware для блокировки путей с двойными слешами ===
-func noDoubleSlashes(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "//") {
-			http.Error(w, "Not Found", http.StatusNotFound)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// === Основная функция — ТОЧКА ВХОДА ===
 func main() {
 	storage := NewMemStorage()
 	r := chi.NewRouter()
 
 	// Middleware
+	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(noDoubleSlashes) // блокируем // до маршрутизации
 
-	// Валидные маршруты
+	// Обработчик для проверки путей с двойными слешами
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Проверяем наличие двойных слешей в пути
+			for i := 0; i < len(r.URL.Path)-1; i++ {
+				if r.URL.Path[i] == '/' && r.URL.Path[i+1] == '/' {
+					http.Error(w, "Not Found", http.StatusNotFound)
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+
+	// Маршруты
 	r.Post("/update/{type}/{name}/{value}", storage.UpdateHandler)
 	r.Get("/value/{type}/{name}", storage.GetValueHandler)
 	r.Get("/", storage.ListMetricsHandler)
 
-	// Глобальный 404 для всех неизвестных путей
-	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "Not Found", http.StatusNotFound)
-	})
-
 	// Запуск сервера
-	log.Println("🚀 Starting server on :8080 with go-chi/chi")
+	log.Printf("🚀 Starting server on :8080 with go-chi/chi")
 	log.Fatal(http.ListenAndServe(":8080", r))
 }
