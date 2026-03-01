@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/gorilla/mux"
 )
@@ -200,17 +199,6 @@ func (s *MemStorage) ListMetricsHandler(w http.ResponseWriter, r *http.Request) 
 	_ = t.Execute(w, metrics)
 }
 
-// noDoubleSlashes middleware блокирует пути с //
-func noDoubleSlashes(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "//") {
-			http.Error(w, "Not Found", http.StatusNotFound)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 // === Основная функция — ТОЧКА ВХОДА ===
 func main() {
 	storage := NewMemStorage()
@@ -221,17 +209,19 @@ func main() {
 	r.SkipClean(true)
 	r.UseEncodedPath()
 
-	// Middleware: блокируем // до маршрутизации
-	r.Use(noDoubleSlashes)
-
 	// Валидные маршруты
 	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
 	r.HandleFunc("/value/{type}/{name}", storage.GetValueHandler).Methods("GET")
 	r.HandleFunc("/", storage.ListMetricsHandler).Methods("GET")
 
-	// ⚠️ Catch-all: ЛЮБОЙ другой запрос к /update/* → 404
+	// 🔥 Catch-all: ЛЮБОЙ другой запрос к /update/* → 404
 	// Должен быть ПОСЛЕ всех валидных маршрутов
 	r.PathPrefix("/update/").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Not Found", http.StatusNotFound)
+	})
+
+	// Устанавливаем NotFoundHandler для отладки (необязательно)
+	r.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
 
