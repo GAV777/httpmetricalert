@@ -11,11 +11,12 @@ import (
 )
 
 const (
-	serverAddress  = "http://localhost:8080"
 	pollInterval   = 2 * time.Second
 	reportInterval = 10 * time.Second
 	contentType    = "text/plain"
 )
+
+var serverAddress = "http://localhost:8080"
 
 // Структура для хранения метрик
 type Metrics struct {
