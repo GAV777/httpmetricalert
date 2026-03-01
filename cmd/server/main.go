@@ -103,14 +103,8 @@ func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 	name := vars["name"]
 	valueStr := vars["value"]
 
-	// 🔥 Критические проверки: имя и значение не должны быть пустыми
+	// Проверка: имя и значение не пустые
 	if name == "" || valueStr == "" {
-		http.Error(w, "Not Found", http.StatusNotFound)
-		return
-	}
-
-	// 🔥 Защита от двойных слешей: если URL содержит "//", это недопустимо
-	if strings.Contains(r.URL.Path, "//") {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
@@ -146,7 +140,6 @@ func (s *MemStorage) GetValueHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	name := vars["name"]
 
-	// Проверка на пустое имя
 	if name == "" {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
@@ -206,6 +199,17 @@ func (s *MemStorage) ListMetricsHandler(w http.ResponseWriter, r *http.Request) 
 	_ = t.Execute(w, metrics)
 }
 
+// === Middleware для блокировки путей с двойными слешами ===
+func noDoubleSlashes(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.EscapedPath(), "//") {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // === Основная функция — ТОЧКА ВХОДА ===
 func main() {
 	storage := NewMemStorage()
@@ -214,8 +218,11 @@ func main() {
 	// Включаем строгую обработку закодированных путей
 	r.UseEncodedPath()
 
-	// Отключаем автоматические редиректы вида /foo/ → /foo
+	// Отключаем автоматические редиректы
 	r.StrictSlash(false)
+
+	// 🔥 Добавляем middleware ДО регистрации маршрутов
+	r.Use(noDoubleSlashes)
 
 	// Регистрация маршрутов
 	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
