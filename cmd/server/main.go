@@ -1,16 +1,31 @@
+// cmd/server/main.go
 package main
 
 import (
-	"fmt"
+	"github.com/gorilla/mux"
+	"html/template"
+	"log"
 	"net/http"
 	"strconv"
-	"strings"
 )
+
+// === Интерфейсы и хранилище ===
+
+// Metric представляет метрику
+type Metric struct {
+	ID    string
+	MType string   // "gauge" или "counter"
+	Delta *int64   // для counter
+	Value *float64 // для gauge
+}
 
 // MetricsStorage определяет интерфейс для работы с хранилищем метрик
 type MetricsStorage interface {
 	UpdateGauge(name string, value float64)
 	UpdateCounter(name string, value int64)
+	GetGauge(name string) (float64, bool)
+	GetCounter(name string) (int64, bool)
+	GetAllMetrics() []Metric
 }
 
 // MemStorage реализует хранилище метрик в памяти
@@ -37,92 +52,174 @@ func (s *MemStorage) UpdateCounter(name string, value int64) {
 	s.counters[name] += value
 }
 
-// MetricsHandler обрабатывает запросы на обновление метрик
-type MetricsHandler struct {
-	storage MetricsStorage
+// GetGauge возвращает значение gauge метрики
+func (s *MemStorage) GetGauge(name string) (float64, bool) {
+	value, exists := s.gauges[name]
+	return value, exists
 }
 
-// NewMetricsHandler создает новый обработчик метрик
-func NewMetricsHandler(storage MetricsStorage) *MetricsHandler {
-	return &MetricsHandler{
-		storage: storage,
+// GetCounter возвращает значение counter метрики
+func (s *MemStorage) GetCounter(name string) (int64, bool) {
+	value, exists := s.counters[name]
+	return value, exists
+}
+
+// GetAllMetrics возвращает список всех метрик
+func (s *MemStorage) GetAllMetrics() []Metric {
+	var metrics []Metric
+
+	for name, value := range s.gauges {
+		metrics = append(metrics, Metric{
+			ID:    name,
+			MType: "gauge",
+			Value: &value,
+		})
 	}
+
+	for name, value := range s.counters {
+		metrics = append(metrics, Metric{
+			ID:    name,
+			MType: "counter",
+			Delta: &value,
+		})
+	}
+
+	return metrics
 }
 
-// UpdateHandler обрабатывает POST /update/:type/:name/:value
-func (h *MetricsHandler) UpdateHandler(w http.ResponseWriter, r *http.Request) {
-	// Проверяем метод запроса
+// === HTTP Хендлеры ===
+
+// UpdateHandler обрабатывает POST /update/{type}/{name}/{value}
+func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Проверяем Content-Type
 	if r.Header.Get("Content-Type") != "text/plain" {
 		http.Error(w, "Content-Type must be text/plain", http.StatusBadRequest)
 		return
 	}
 
-	// Разбираем путь
-	pathParts := strings.Split(r.URL.Path, "/")
-	// Ожидаем формат: /update/{type}/{name}/{value}
-	if len(pathParts) != 5 || pathParts[1] != "update" {
-		http.NotFound(w, r)
-		return
-	}
+	vars := mux.Vars(r)
+	metricType := vars["type"]
+	name := vars["name"]
+	valueStr := vars["value"]
 
-	metricType := pathParts[2]
-	metricName := pathParts[3]
-	metricValue := pathParts[4]
-
-	// Проверяем наличие имени метрики
-	if metricName == "" {
+	if name == "" {
 		http.Error(w, "Metric name is required", http.StatusNotFound)
 		return
 	}
 
-	// Обрабатываем в зависимости от типа метрики
 	switch metricType {
 	case "gauge":
-		value, err := strconv.ParseFloat(metricValue, 64)
+		value, err := strconv.ParseFloat(valueStr, 64)
 		if err != nil {
 			http.Error(w, "Invalid gauge value", http.StatusBadRequest)
 			return
 		}
-		h.storage.UpdateGauge(metricName, value)
+		s.UpdateGauge(name, value)
 
 	case "counter":
-		value, err := strconv.ParseInt(metricValue, 10, 64)
+		value, err := strconv.ParseInt(valueStr, 10, 64)
 		if err != nil {
 			http.Error(w, "Invalid counter value", http.StatusBadRequest)
 			return
 		}
-		h.storage.UpdateCounter(metricName, value)
+		s.UpdateCounter(name, value)
 
 	default:
 		http.Error(w, "Invalid metric type", http.StatusBadRequest)
 		return
 	}
 
-	// Успешный ответ
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Metric updated successfully")
+	_, _ = w.Write([]byte("OK"))
 }
 
-func main() {
-	// Создаем хранилище
-	storage := NewMemStorage()
+// GetValueHandler обрабатывает GET /value/{type}/{name}
+func (s *MemStorage) GetValueHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	metricType := vars["type"]
+	name := vars["name"]
 
-	// Создаем обработчик
-	handler := NewMetricsHandler(storage)
+	switch metricType {
+	case "gauge":
+		value, ok := s.GetGauge(name)
+		if !ok {
+			http.Error(w, "Metric not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(strconv.FormatFloat(value, 'f', -1, 64)))
 
-	// Регистрируем обработчик для всех путей, начинающихся с /update/
-	http.HandleFunc("/update/", handler.UpdateHandler)
+	case "counter":
+		value, ok := s.GetCounter(name)
+		if !ok {
+			http.Error(w, "Metric not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(strconv.FormatInt(value, 10)))
 
-	// Запускаем сервер
-	addr := "localhost:8080"
-	fmt.Printf("Starting metrics server on %s\n", addr)
-	if err := http.ListenAndServe(addr, nil); err != nil {
-		panic(err)
+	default:
+		http.Error(w, "Invalid metric type", http.StatusBadRequest)
+		return
 	}
+}
+
+// ListMetricsHandler обрабатывает GET /
+func (s *MemStorage) ListMetricsHandler(w http.ResponseWriter, r *http.Request) {
+	metrics := s.GetAllMetrics()
+
+	tmpl := `
+<!DOCTYPE html>
+<html>
+<head><title>Метрики</title></head>
+<body>
+<h1>Список метрик</h1>
+<table border="1" style="width:100%; border-collapse: collapse;">
+<tr style="background:#eee"><th>Имя</th><th>Тип</th><th>Значение</th></tr>
+{{range .}}
+<tr>
+<td style="padding:8px">{{.ID}}</td>
+<td style="padding:8px">{{.MType}}</td>
+<td style="padding:8px; text-align:right">
+{{if .Value}}{{printf "%.6f" .Value}}{{end}}
+{{if .Delta}}{{.Delta}}{{end}}
+</td>
+</tr>
+{{end}}
+</table>
+</body>
+</html>
+`
+
+	t := template.Must(template.New("metrics").Parse(tmpl))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = t.Execute(w, metrics)
+}
+
+// === Основная функция ===
+
+func main() {
+	storage := NewMemStorage()
+	r := mux.NewRouter()
+
+	// Регистрация маршрутов
+	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
+	r.HandleFunc("/value/{type}/{name}", storage.GetValueHandler).Methods("GET")
+	r.HandleFunc("/", storage.ListMetricsHandler).Methods("GET")
+
+	// Настройка Content-Type middleware для /update/*
+	r.PathPrefix("/update/").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Content-Type") != "text/plain" {
+			http.Error(w, "Content-Type must be text/plain", http.StatusBadRequest)
+			return
+		}
+	}).Methods("POST")
+
+	addr := "localhost:8080"
+	log.Printf("Starting server on %s\n", addr)
+	log.Fatal(http.ListenAndServe(addr, r))
 }
