@@ -2,15 +2,11 @@
 package main
 
 import (
-	"html/template"
-	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/gorilla/mux"
 )
-
-// === Интерфейсы и хранилище ===
 
 // Metric представляет метрику
 type Metric struct {
@@ -88,51 +84,46 @@ func (s *MemStorage) GetAllMetrics() []Metric {
 	return metrics
 }
 
-// === HTTP Хендлеры ===
-
 // UpdateHandler обрабатывает POST /update/{type}/{name}/{value}
 func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Проверка Content-Type
 	if r.Header.Get("Content-Type") != "text/plain" {
-		http.Error(w, "Content-Type must be text/plain", http.StatusBadRequest)
+		http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
 		return
 	}
 
 	vars := mux.Vars(r)
-	metricType := vars["type"]
 	name := vars["name"]
-	valueStr := vars["value"]
 
-	// 🔥 Критично: имя метрики не должно быть пустым
+	// 🔥 Проверка: имя не должно быть пустым
 	if name == "" {
-		http.Error(w, "Metric name is required", http.StatusNotFound)
+		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
 
-	switch metricType {
+	switch vars["type"] {
 	case "gauge":
-		value, err := strconv.ParseFloat(valueStr, 64)
+		value, err := strconv.ParseFloat(vars["value"], 64)
 		if err != nil {
-			http.Error(w, "Invalid gauge value", http.StatusBadRequest)
+			http.Error(w, "Invalid value", http.StatusBadRequest)
 			return
 		}
 		s.UpdateGauge(name, value)
 
 	case "counter":
-		value, err := strconv.ParseInt(valueStr, 10, 64)
+		value, err := strconv.ParseInt(vars["value"], 10, 64)
 		if err != nil {
-			http.Error(w, "Invalid counter value", http.StatusBadRequest)
+			http.Error(w, "Invalid value", http.StatusBadRequest)
 			return
 		}
 		s.UpdateCounter(name, value)
 
 	default:
-		http.Error(w, "Invalid metric type", http.StatusBadRequest)
+		http.Error(w, "Invalid type", http.StatusBadRequest)
 		return
 	}
 
@@ -143,14 +134,13 @@ func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 // GetValueHandler обрабатывает GET /value/{type}/{name}
 func (s *MemStorage) GetValueHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	metricType := vars["type"]
 	name := vars["name"]
 
-	switch metricType {
+	switch vars["type"] {
 	case "gauge":
 		value, ok := s.GetGauge(name)
 		if !ok {
-			http.Error(w, "Metric not found", http.StatusNotFound)
+			http.Error(w, "Not Found", http.StatusNotFound)
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain")
@@ -159,64 +149,16 @@ func (s *MemStorage) GetValueHandler(w http.ResponseWriter, r *http.Request) {
 	case "counter":
 		value, ok := s.GetCounter(name)
 		if !ok {
-			http.Error(w, "Metric not found", http.StatusNotFound)
+			http.Error(w, "Not Found", http.StatusNotFound)
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte(strconv.FormatInt(value, 10)))
 
 	default:
-		http.Error(w, "Invalid metric type", http.StatusBadRequest)
+		http.Error(w, "Invalid type", http.StatusBadRequest)
 		return
 	}
 }
 
 // ListMetricsHandler обрабатывает GET /
-func (s *MemStorage) ListMetricsHandler(w http.ResponseWriter, r *http.Request) {
-	metrics := s.GetAllMetrics()
-
-	tmpl := `
-<!DOCTYPE html>
-<html>
-<head><title>Метрики</title></head>
-<body>
-<h1>Список метрик</h1>
-<table border="1" style="width:100%; border-collapse: collapse;">
-<tr style="background:#eee"><th>Имя</th><th>Тип</th><th>Значение</th></tr>
-{{range .}}
-<tr>
-<td style="padding:8px">{{.ID}}</td>
-<td style="padding:8px">{{.MType}}</td>
-<td style="padding:8px; text-align:right">
-{{if .Value}}{{printf "%.6f" .Value}}{{end}}
-{{if .Delta}}{{.Delta}}{{end}}
-</td>
-</tr>
-{{end}}
-</table>
-</body>
-</html>
-`
-
-	t := template.Must(template.New("metrics").Parse(tmpl))
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = t.Execute(w, metrics)
-}
-
-// === Основная функция ===
-
-func main() {
-	storage := NewMemStorage()
-	r := mux.NewRouter()
-
-	// Регистрация маршрутов
-	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
-	r.HandleFunc("/value/{type}/{name}", storage.GetValueHandler).Methods("GET")
-	r.HandleFunc("/", storage.ListMetricsHandler).Methods("GET")
-
-	// 🔁 ВАЖНО: НЕ ДОБАВЛЯЕМ PathPrefix для /update/ — это ломает 404!
-
-	addr := "localhost:8080"
-	log.Printf("Starting server on %s\n", addr)
-	log.Fatal(http.ListenAndServe(addr, r))
-}

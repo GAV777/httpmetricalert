@@ -10,15 +10,19 @@ import (
 )
 
 func TestUpdateHandler_Gauge(t *testing.T) {
-	// Создаем тестовое хранилище
 	storage := NewMemStorage()
 
+	// Создаем запрос
 	req := httptest.NewRequest("POST", "/update/gauge/test_metric/123.45", strings.NewReader("123.45"))
 	req.Header.Set("Content-Type", "text/plain")
 	w := httptest.NewRecorder()
 
-	// Вызываем метод напрямую
-	storage.UpdateHandler(w, req)
+	// Создаем роутер и регистрируем обработчик
+	r := mux.NewRouter()
+	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
+
+	// Обрабатываем через роутер
+	r.ServeHTTP(w, req)
 
 	resp := w.Result()
 	defer resp.Body.Close()
@@ -28,53 +32,55 @@ func TestUpdateHandler_Gauge(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status 200, got %d", resp.StatusCode)
 	}
-	if string(body) == "" {
+	if len(body) == 0 {
 		t.Error("Expected non-empty response body")
 	}
 
-	// Проверим, что метрика действительно сохранена
-	if val, exists := storage.gauges["test_metric"]; !exists || val != 123.45 {
-		t.Errorf("Gauge metric not stored correctly: expected 123.45, got %v", val)
+	// Проверяем, что метрика сохранена
+	value, ok := storage.GetGauge("test_metric")
+	if !ok {
+		t.Error("Gauge metric not found")
+	} else if value != 123.45 {
+		t.Errorf("Expected gauge value 123.45, got %f", value)
 	}
 }
 
 func TestUpdateHandler_Counter(t *testing.T) {
 	storage := NewMemStorage()
 
+	// Первый вызов
 	req := httptest.NewRequest("POST", "/update/counter/polls/5", strings.NewReader("5"))
 	req.Header.Set("Content-Type", "text/plain")
 	w := httptest.NewRecorder()
 
-	storage.UpdateHandler(w, req)
+	r := mux.NewRouter()
+	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
+	r.ServeHTTP(w, req)
 
-	resp := w.Result()
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
 	}
 
-	// Проверим, что счётчик увеличился
-	if val, exists := storage.counters["polls"]; !exists || val != 5 {
-		t.Errorf("Counter metric not stored correctly: expected 5, got %d", val)
+	// Проверяем значение
+	value, ok := storage.GetCounter("polls")
+	if !ok || value != 5 {
+		t.Errorf("Expected counter value 5, got %d", value)
 	}
 
-	// Повторный вызов — значение должно суммироваться
+	// Второй вызов — должно суммироваться
 	req2 := httptest.NewRequest("POST", "/update/counter/polls/3", strings.NewReader("3"))
 	req2.Header.Set("Content-Type", "text/plain")
 	w2 := httptest.NewRecorder()
 
-	storage.UpdateHandler(w2, req2)
+	r.ServeHTTP(w2, req2)
 
-	resp2 := w2.Result()
-	resp2.Body.Close()
-
-	if resp2.StatusCode != http.StatusOK {
-		t.Errorf("Second update failed with status %d", resp2.StatusCode)
+	if w2.Code != http.StatusOK {
+		t.Errorf("Second update failed with status %d", w2.Code)
 	}
 
-	if val := storage.counters["polls"]; val != 8 {
-		t.Errorf("Counter not incremented correctly: expected 8, got %d", val)
+	value, _ = storage.GetCounter("polls")
+	if value != 8 {
+		t.Errorf("Expected counter value 8 after increment, got %d", value)
 	}
 }
 
@@ -84,8 +90,9 @@ func TestUpdateHandler_InvalidMethod(t *testing.T) {
 	req := httptest.NewRequest("GET", "/update/gauge/temp/25.5", nil)
 	w := httptest.NewRecorder()
 
-	// Метод ожидает POST
-	storage.UpdateHandler(w, req)
+	r := mux.NewRouter()
+	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("Expected status 405, got %d", w.Code)
@@ -95,11 +102,13 @@ func TestUpdateHandler_InvalidMethod(t *testing.T) {
 func TestUpdateHandler_InvalidContentType(t *testing.T) {
 	storage := NewMemStorage()
 
-	req := httptest.NewRequest("POST", "/update/gauge/temp/25.5", nil)
+	req := httptest.NewRequest("POST", "/update/gauge/temp/25.5", strings.NewReader("25.5"))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	storage.UpdateHandler(w, req)
+	r := mux.NewRouter()
+	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Expected status 400, got %d", w.Code)
@@ -124,14 +133,8 @@ func TestUpdateHandler_InvalidPath(t *testing.T) {
 			req.Header.Set("Content-Type", "text/plain")
 			w := httptest.NewRecorder()
 
-			// Передаём запрос в UpdateHandler
-			// Но! UpdateHandler использует mux.Vars(r), которые пусты при ручном вызове
-			// Поэтому нужно смоделировать маршрутизацию
-			// → Обернём в router
 			r := mux.NewRouter()
 			r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
-
-			// Serve the request through the router
 			r.ServeHTTP(w, req)
 
 			if w.Code != http.StatusNotFound {
