@@ -100,12 +100,6 @@ func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Дополнительная проверка на двойные слеши в пути
-	if strings.Contains(r.URL.Path, "//") {
-		http.Error(w, "Not Found", http.StatusNotFound)
-		return
-	}
-
 	vars := mux.Vars(r)
 	name := vars["name"]
 	valueStr := vars["value"]
@@ -206,58 +200,42 @@ func (s *MemStorage) ListMetricsHandler(w http.ResponseWriter, r *http.Request) 
 	_ = t.Execute(w, metrics)
 }
 
-// Кастомный обработчик для перехвата всех запросов
-type customHandler struct {
-	router *mux.Router
-}
-
-func (h *customHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Проверяем наличие двойных слешей в пути
-	if strings.Contains(r.URL.Path, "//") {
-		http.Error(w, "Not Found", http.StatusNotFound)
-		return
-	}
-
-	// Проверяем, начинается ли путь с /update/ и имеет ли неправильный формат
-	if strings.HasPrefix(r.URL.Path, "/update/") {
-		// Разбиваем путь на части
-		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		// Для пути /update/type/name/value должно быть ровно 4 части
-		if len(parts) != 4 {
+// noDoubleSlashes middleware блокирует пути с //
+func noDoubleSlashes(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "//") {
 			http.Error(w, "Not Found", http.StatusNotFound)
 			return
 		}
-		// Проверяем, что все части не пустые
-		for _, part := range parts {
-			if part == "" {
-				http.Error(w, "Not Found", http.StatusNotFound)
-				return
-			}
-		}
-	}
-
-	// Передаем запрос роутеру
-	h.router.ServeHTTP(w, r)
+		next.ServeHTTP(w, r)
+	})
 }
 
+// === Основная функция — ТОЧКА ВХОДА ===
 func main() {
 	storage := NewMemStorage()
 	r := mux.NewRouter()
 
-	// Отключаем строгость и очистку путей
+	// Настройки маршрутизации
 	r.StrictSlash(false)
 	r.SkipClean(true)
 	r.UseEncodedPath()
 
-	// Регистрация маршрутов
+	// Middleware: блокируем // до маршрутизации
+	r.Use(noDoubleSlashes)
+
+	// Валидные маршруты
 	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
 	r.HandleFunc("/value/{type}/{name}", storage.GetValueHandler).Methods("GET")
 	r.HandleFunc("/", storage.ListMetricsHandler).Methods("GET")
 
-	// Оборачиваем роутер в кастомный обработчик
-	handler := &customHandler{router: r}
+	// ⚠️ Catch-all: ЛЮБОЙ другой запрос к /update/* → 404
+	// Должен быть ПОСЛЕ всех валидных маршрутов
+	r.PathPrefix("/update/").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Not Found", http.StatusNotFound)
+	})
 
 	// Запуск сервера
 	log.Println("Starting server on :8080")
-	log.Fatal(http.ListenAndServe(":8080", handler))
+	log.Fatal(http.ListenAndServe(":8080", r))
 }
