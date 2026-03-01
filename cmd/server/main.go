@@ -2,13 +2,11 @@
 package main
 
 import (
+	"github.com/gorilla/mux"
 	"html/template"
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
-
-	"github.com/gorilla/mux"
 )
 
 // Metric представляет метрику
@@ -199,17 +197,6 @@ func (s *MemStorage) ListMetricsHandler(w http.ResponseWriter, r *http.Request) 
 	_ = t.Execute(w, metrics)
 }
 
-// === Middleware для блокировки путей с двойными слешами ===
-func noDoubleSlashes(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.EscapedPath(), "//") {
-			http.Error(w, "Not Found", http.StatusNotFound)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 // === Основная функция — ТОЧКА ВХОДА ===
 func main() {
 	storage := NewMemStorage()
@@ -221,13 +208,15 @@ func main() {
 	// Отключаем автоматические редиректы
 	r.StrictSlash(false)
 
-	// 🔥 Добавляем middleware ДО регистрации маршрутов
-	r.Use(noDoubleSlashes)
-
 	// Регистрация маршрутов
 	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
 	r.HandleFunc("/value/{type}/{name}", storage.GetValueHandler).Methods("GET")
 	r.HandleFunc("/", storage.ListMetricsHandler).Methods("GET")
+
+	// 🔥 Catch-all: все пути, начинающиеся с /update/, но не подходящие под шаблон, → 404
+	r.PathPrefix("/update/").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Not Found", http.StatusNotFound)
+	})
 
 	// Запуск сервера
 	log.Println("Starting server on :8080")
