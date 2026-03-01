@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gorilla/mux"
 )
@@ -198,23 +199,38 @@ func (s *MemStorage) ListMetricsHandler(w http.ResponseWriter, r *http.Request) 
 	_ = t.Execute(w, metrics)
 }
 
+// === Middleware для блокировки путей с двойными слешами ===
+func noDoubleSlashes(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "//") {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // === Основная функция — ТОЧКА ВХОДА ===
 func main() {
 	storage := NewMemStorage()
 	r := mux.NewRouter()
 
-	// Критические настройки маршрутизации
-	r.StrictSlash(false) // отключаем /foo/ → /foo
-	r.SkipClean(true)    // не нормализуем путь до сравнения
-	r.UseEncodedPath()   // используем закодированный путь для сравнения
+	// Включаем строгую обработку закодированных путей
+	r.UseEncodedPath()
+	// Отключаем автоматические редиректы
+	r.StrictSlash(false)
+	// Не "чистим" путь (сохраняем //)
+	r.SkipClean(true)
 
-	// Регистрация ВАЛИДНЫХ маршрутов — СНАЧАЛА
+	// 🔥 Добавляем middleware ДО маршрутов
+	r.Use(noDoubleSlashes)
+
+	// Регистрация маршрутов
 	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
 	r.HandleFunc("/value/{type}/{name}", storage.GetValueHandler).Methods("GET")
 	r.HandleFunc("/", storage.ListMetricsHandler).Methods("GET")
 
-	// ⚠️ Catch-all: ЛЮБОЙ другой запрос к /update/* → 404
-	// Должен быть ПОСЛЕ всех валидных маршрутов
+	// Catch-all для /update/* — на случай, если middleware не сработал
 	r.PathPrefix("/update/").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
