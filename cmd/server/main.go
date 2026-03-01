@@ -1,4 +1,3 @@
-// cmd/server/main.go
 package main
 
 import (
@@ -69,18 +68,20 @@ func (s *MemStorage) GetAllMetrics() []Metric {
 	var metrics []Metric
 
 	for name, value := range s.gauges {
+		valueCopy := value
 		metrics = append(metrics, Metric{
 			ID:    name,
 			MType: "gauge",
-			Value: &value,
+			Value: &valueCopy,
 		})
 	}
 
 	for name, value := range s.counters {
+		valueCopy := value
 		metrics = append(metrics, Metric{
 			ID:    name,
 			MType: "counter",
-			Delta: &value,
+			Delta: &valueCopy,
 		})
 	}
 
@@ -91,6 +92,12 @@ func (s *MemStorage) GetAllMetrics() []Metric {
 func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Проверяем наличие двойных слешей в пути
+	if strings.Contains(r.URL.Path, "//") {
+		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
 
@@ -199,41 +206,32 @@ func (s *MemStorage) ListMetricsHandler(w http.ResponseWriter, r *http.Request) 
 	_ = t.Execute(w, metrics)
 }
 
-// === Middleware для блокировки путей с двойными слешами ===
-func noDoubleSlashes(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "//") {
-			http.Error(w, "Not Found", http.StatusNotFound)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+// CatchAllHandler обрабатывает все запросы, которые не подошли под основные маршруты
+func CatchAllHandler(w http.ResponseWriter, r *http.Request) {
+	// Если в пути есть двойной слеш или это запрос к /update/ с некорректным форматом
+	if strings.Contains(r.URL.Path, "//") || strings.HasPrefix(r.URL.Path, "/update/") {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+	http.NotFound(w, r)
 }
 
-// === Основная функция — ТОЧКА ВХОДА ===
 func main() {
 	storage := NewMemStorage()
 	r := mux.NewRouter()
 
-	// Включаем строгую обработку закодированных путей
-	r.UseEncodedPath()
-	// Отключаем автоматические редиректы
+	// Отключаем автоматическую нормализацию путей
 	r.StrictSlash(false)
-	// Не "чистим" путь (сохраняем //)
 	r.SkipClean(true)
+	r.UseEncodedPath()
 
-	// 🔥 Добавляем middleware ДО маршрутов
-	r.Use(noDoubleSlashes)
-
-	// Регистрация маршрутов
+	// Основные маршруты
 	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
 	r.HandleFunc("/value/{type}/{name}", storage.GetValueHandler).Methods("GET")
 	r.HandleFunc("/", storage.ListMetricsHandler).Methods("GET")
 
-	// Catch-all для /update/* — на случай, если middleware не сработал
-	r.PathPrefix("/update/").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "Not Found", http.StatusNotFound)
-	})
+	// Обработчик для всех остальных путей (включая пути с двойными слешами)
+	r.PathPrefix("/").HandlerFunc(CatchAllHandler)
 
 	// Запуск сервера
 	log.Println("Starting server on :8080")
