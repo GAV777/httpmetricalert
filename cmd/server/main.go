@@ -2,11 +2,12 @@
 package main
 
 import (
-	"github.com/gorilla/mux"
 	"html/template"
 	"log"
 	"net/http"
 	"strconv"
+
+	"github.com/gorilla/mux"
 )
 
 // Metric представляет метрику
@@ -202,18 +203,18 @@ func main() {
 	storage := NewMemStorage()
 	r := mux.NewRouter()
 
-	// Включаем строгую обработку закодированных путей
-	r.UseEncodedPath()
+	// Критические настройки маршрутизации
+	r.StrictSlash(false) // отключаем /foo/ → /foo
+	r.SkipClean(true)    // не нормализуем путь до сравнения
+	r.UseEncodedPath()   // используем закодированный путь для сравнения
 
-	// Отключаем автоматические редиректы
-	r.StrictSlash(false)
-
-	// Регистрация маршрутов
+	// Регистрация ВАЛИДНЫХ маршрутов — СНАЧАЛА
 	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
 	r.HandleFunc("/value/{type}/{name}", storage.GetValueHandler).Methods("GET")
 	r.HandleFunc("/", storage.ListMetricsHandler).Methods("GET")
 
-	// 🔥 Catch-all: все пути, начинающиеся с /update/, но не подходящие под шаблон, → 404
+	// ⚠️ Catch-all: ЛЮБОЙ другой запрос к /update/* → 404
+	// Должен быть ПОСЛЕ всех валидных маршрутов
 	r.PathPrefix("/update/").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
