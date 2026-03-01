@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gorilla/mux"
 )
@@ -217,15 +218,21 @@ func main() {
 	// 🔥 Catch-all: ЛЮБОЙ другой запрос к /update/* → 404
 	// Должен быть ПОСЛЕ всех валидных маршрутов
 	r.PathPrefix("/update/").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Явная проверка на двойные слеши
+		if strings.Contains(r.URL.Path, "//") {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
+		// Или просто всегда 404 для любых других /update/*
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
 
-	// Устанавливаем NotFoundHandler (резервный)
+	// Резервный обработчик
 	r.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
 
 	// Запуск сервера
-	log.Println("Starting server on :8080")
+	log.Println("🚀 Starting server on :8080 with Gorilla Mux")
 	log.Fatal(http.ListenAndServe(":8080", r))
 }
