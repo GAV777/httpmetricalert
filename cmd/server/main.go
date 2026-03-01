@@ -1,160 +1,241 @@
 package main
 
 import (
-	"flag"
-	"fmt"
+	"html/template"
 	"log"
-	"math/rand"
 	"net/http"
-	"runtime"
+	"strconv"
 	"strings"
-	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
-var (
-	buildVersion = "N/A"
-	buildDate    = "N/A"
-	buildCommit  = "N/A"
-
-	serverAddress  string
-	reportInterval time.Duration
-	pollInterval   time.Duration
-)
-
-func init() {
-	flag.StringVar(&serverAddress, "a", "localhost:8080", "адрес эндпоинта HTTP-сервера")
-	flag.DurationVar(&reportInterval, "r", 10*time.Second, "частота отправки метрик на сервер (в секундах)")
-	flag.DurationVar(&pollInterval, "p", 2*time.Second, "частота опроса метрик из пакета runtime (в секундах)")
+// Metric представляет метрику
+type Metric struct {
+	ID    string
+	MType string   // "gauge" или "counter"
+	Delta *int64   // для counter
+	Value *float64 // для gauge
 }
 
-// Структура для хранения метрик
-type Metrics struct {
-	Gauge   map[string]float64
-	Counter map[string]int64
+// MetricsStorage определяет интерфейс для работы с хранилищем метрик
+type MetricsStorage interface {
+	UpdateGauge(name string, value float64)
+	UpdateCounter(name string, value int64)
+	GetGauge(name string) (float64, bool)
+	GetCounter(name string) (int64, bool)
+	GetAllMetrics() []Metric
 }
 
-func NewMetrics() *Metrics {
-	return &Metrics{
-		Gauge:   make(map[string]float64),
-		Counter: make(map[string]int64),
+// MemStorage реализует хранилище метрик в памяти
+type MemStorage struct {
+	gauges   map[string]float64
+	counters map[string]int64
+}
+
+// NewMemStorage создает новое хранилище метрик
+func NewMemStorage() *MemStorage {
+	return &MemStorage{
+		gauges:   make(map[string]float64),
+		counters: make(map[string]int64),
 	}
 }
 
-// Сбор метрик из runtime
-func (m *Metrics) Collect() {
-	var memStats runtime.MemStats
-	runtime.ReadMemStats(&memStats)
-
-	m.Gauge["Alloc"] = float64(memStats.Alloc)
-	m.Gauge["BuckHashSys"] = float64(memStats.BuckHashSys)
-	m.Gauge["Frees"] = float64(memStats.Frees)
-	m.Gauge["GCCPUFraction"] = memStats.GCCPUFraction
-	m.Gauge["GCSys"] = float64(memStats.GCSys)
-	m.Gauge["HeapAlloc"] = float64(memStats.HeapAlloc)
-	m.Gauge["HeapIdle"] = float64(memStats.HeapIdle)
-	m.Gauge["HeapInuse"] = float64(memStats.HeapInuse)
-	m.Gauge["HeapObjects"] = float64(memStats.HeapObjects)
-	m.Gauge["HeapReleased"] = float64(memStats.HeapReleased)
-	m.Gauge["HeapSys"] = float64(memStats.HeapSys)
-	m.Gauge["LastGC"] = float64(memStats.LastGC)
-	m.Gauge["Lookups"] = float64(memStats.Lookups)
-	m.Gauge["MCacheInuse"] = float64(memStats.MCacheInuse)
-	m.Gauge["MCacheSys"] = float64(memStats.MCacheSys)
-	m.Gauge["MSpanInuse"] = float64(memStats.MSpanInuse)
-	m.Gauge["MSpanSys"] = float64(memStats.MSpanSys)
-	m.Gauge["Mallocs"] = float64(memStats.Mallocs)
-	m.Gauge["NextGC"] = float64(memStats.NextGC)
-	m.Gauge["NumForcedGC"] = float64(memStats.NumForcedGC)
-	m.Gauge["NumGC"] = float64(memStats.NumGC)
-	m.Gauge["OtherSys"] = float64(memStats.OtherSys)
-	m.Gauge["PauseTotalNs"] = float64(memStats.PauseTotalNs)
-	m.Gauge["StackInuse"] = float64(memStats.StackInuse)
-	m.Gauge["StackSys"] = float64(memStats.StackSys)
-	m.Gauge["Sys"] = float64(memStats.Sys)
-	m.Gauge["TotalAlloc"] = float64(memStats.TotalAlloc)
-
-	// Дополнительные метрики
-	m.Gauge["RandomValue"] = rand.Float64()
-	m.Counter["PollCount"]++
+// UpdateGauge обновляет значение gauge метрики
+func (s *MemStorage) UpdateGauge(name string, value float64) {
+	s.gauges[name] = value
 }
 
-// Отправка одной метрики на сервер
-func (m *Metrics) SendMetric(client *http.Client, metricType, name string, value interface{}) {
-	var valueStr string
-	switch v := value.(type) {
-	case int64:
-		valueStr = fmt.Sprintf("%d", v)
-	case float64:
-		valueStr = fmt.Sprintf("%g", v)
-	default:
+// UpdateCounter обновляет значение counter метрики (суммирует с предыдущим)
+func (s *MemStorage) UpdateCounter(name string, value int64) {
+	s.counters[name] += value
+}
+
+// GetGauge возвращает значение gauge метрики
+func (s *MemStorage) GetGauge(name string) (float64, bool) {
+	value, exists := s.gauges[name]
+	return value, exists
+}
+
+// GetCounter возвращает значение counter метрики
+func (s *MemStorage) GetCounter(name string) (int64, bool) {
+	value, exists := s.counters[name]
+	return value, exists
+}
+
+// GetAllMetrics возвращает список всех метрик
+func (s *MemStorage) GetAllMetrics() []Metric {
+	var metrics []Metric
+
+	for name, value := range s.gauges {
+		valueCopy := value
+		metrics = append(metrics, Metric{
+			ID:    name,
+			MType: "gauge",
+			Value: &valueCopy,
+		})
+	}
+
+	for name, value := range s.counters {
+		valueCopy := value
+		metrics = append(metrics, Metric{
+			ID:    name,
+			MType: "counter",
+			Delta: &valueCopy,
+		})
+	}
+
+	return metrics
+}
+
+// UpdateHandler обрабатывает POST /update/{type}/{name}/{value}
+func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	url := fmt.Sprintf("http://%s/update/%s/%s/%s", serverAddress, metricType, name, valueStr)
-	req, err := http.NewRequest("POST", url, strings.NewReader(valueStr))
-	if err != nil {
-		fmt.Printf("Error creating request for %s: %v\n", name, err)
+	contentType := r.Header.Get("Content-Type")
+	if contentType != "" && contentType != "text/plain" {
+		http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
 		return
 	}
-	req.Header.Set("Content-Type", "text/plain")
 
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Printf("Error sending metric %s: %v\n", name, err)
+	name := chi.URLParam(r, "name")
+	valueStr := chi.URLParam(r, "value")
+
+	// Убираем возможные пробелы
+	name = strings.TrimSpace(name)
+	valueStr = strings.TrimSpace(valueStr)
+
+	// Проверка: имя и значение не пустые
+	if name == "" || valueStr == "" {
+		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("Error response for %s: %s\n", name, resp.Status)
-	}
-}
-
-// Отправка всех метрик
-func (m *Metrics) Report() {
-	client := &http.Client{}
-	for name, value := range m.Gauge {
-		m.SendMetric(client, "gauge", name, value)
-	}
-	for name, value := range m.Counter {
-		m.SendMetric(client, "counter", name, value)
-	}
-}
-
-func main() {
-	// Выводим информацию о сборке
-	fmt.Printf("Build version: %s\n", buildVersion)
-	fmt.Printf("Build date: %s\n", buildDate)
-	fmt.Printf("Build commit: %s\n", buildCommit)
-
-	// Парсим флаги
-	flag.Parse()
-
-	// Проверяем неизвестные аргументы
-	if len(flag.Args()) > 0 {
-		log.Fatalf("неизвестные аргументы командной строки: %v", flag.Args())
-	}
-
-	// Преобразуем строку в полный URL, если нужно
-	if !strings.HasPrefix(serverAddress, "http://") && !strings.HasPrefix(serverAddress, "https://") {
-		serverAddress = "http://" + serverAddress
-	}
-
-	metrics := NewMetrics()
-	tickerPoll := time.NewTicker(pollInterval)
-	tickerReport := time.NewTicker(reportInterval)
-	defer tickerPoll.Stop()
-	defer tickerReport.Stop()
-
-	// Первичный сбор
-	metrics.Collect()
-
-	for {
-		select {
-		case <-tickerPoll.C:
-			metrics.Collect()
-		case <-tickerReport.C:
-			metrics.Report()
+	switch chi.URLParam(r, "type") {
+	case "gauge":
+		value, err := strconv.ParseFloat(valueStr, 64)
+		if err != nil {
+			http.Error(w, "Invalid value", http.StatusBadRequest)
+			return
 		}
+		s.UpdateGauge(name, value)
+
+	case "counter":
+		value, err := strconv.ParseInt(valueStr, 10, 64)
+		if err != nil {
+			http.Error(w, "Invalid value", http.StatusBadRequest)
+			return
+		}
+		s.UpdateCounter(name, value)
+
+	default:
+		http.Error(w, "Invalid type", http.StatusBadRequest)
+		return
 	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("OK"))
+}
+
+// GetValueHandler обрабатывает GET /value/{type}/{name}
+func (s *MemStorage) GetValueHandler(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	name = strings.TrimSpace(name)
+
+	if name == "" {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
+	switch chi.URLParam(r, "type") {
+	case "gauge":
+		value, ok := s.GetGauge(name)
+		if !ok {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(strconv.FormatFloat(value, 'f', -1, 64)))
+
+	case "counter":
+		value, ok := s.GetCounter(name)
+		if !ok {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(strconv.FormatInt(value, 10)))
+
+	default:
+		http.Error(w, "Invalid type", http.StatusBadRequest)
+		return
+	}
+}
+
+// ListMetricsHandler обрабатывает GET /
+func (s *MemStorage) ListMetricsHandler(w http.ResponseWriter, r *http.Request) {
+	metrics := s.GetAllMetrics()
+
+	tmpl := `
+<!DOCTYPE html>
+<html>
+<head><title>Метрики</title></head>
+<body>
+<h1>Список метрик</h1>
+<table border="1" style="width:100%; border-collapse: collapse;">
+<tr style="background:#eee"><th>Имя</th><th>Тип</th><th>Значение</th></tr>
+{{range .}}
+<tr>
+<td>{{.ID}}</td>
+<td>{{.MType}}</td>
+<td>{{if .Value}}{{printf "%.6f" .Value}}{{end}}{{if .Delta}}{{.Delta}}{{end}}</td>
+</tr>
+{{end}}
+</table>
+</body>
+</html>
+`
+
+	t := template.Must(template.New("metrics").Parse(tmpl))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = t.Execute(w, metrics)
+}
+
+// === Middleware для блокировки путей с двойными слешами ===
+func noDoubleSlashes(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "//") {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// === Основная функция — ТОЧКА ВХОДА ===
+func main() {
+	storage := NewMemStorage()
+	r := chi.NewRouter()
+
+	// Middleware
+	r.Use(middleware.Recoverer)
+	r.Use(noDoubleSlashes) // блокируем // до маршрутизации
+
+	// Валидные маршруты
+	r.Post("/update/{type}/{name}/{value}", storage.UpdateHandler)
+	r.Get("/value/{type}/{name}", storage.GetValueHandler)
+	r.Get("/", storage.ListMetricsHandler)
+
+	// Глобальный 404 для всех неизвестных путей
+	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Not Found", http.StatusNotFound)
+	})
+
+	// Запуск сервера
+	log.Println("🚀 Starting server on :8080 with go-chi/chi")
+	log.Fatal(http.ListenAndServe(":8080", r))
 }

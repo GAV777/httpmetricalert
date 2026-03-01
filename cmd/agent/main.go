@@ -1,31 +1,22 @@
 package main
 
 import (
-	"flag"
 	"fmt"
-	"log"
 	"math/rand"
-	"net/http"
 	"runtime"
-	"strings"
 	"time"
+
+	"net/http"
+	"strings"
 )
 
-var (
-	buildVersion = "N/A"
-	buildDate    = "N/A"
-	buildCommit  = "N/A"
-
-	serverAddress  string
-	reportInterval time.Duration
-	pollInterval   time.Duration
+const (
+	pollInterval   = 2 * time.Second
+	reportInterval = 10 * time.Second
+	contentType    = "text/plain"
 )
 
-func init() {
-	flag.StringVar(&serverAddress, "a", "localhost:8080", "адрес эндпоинта HTTP-сервера")
-	flag.DurationVar(&reportInterval, "r", 10*time.Second, "частота отправки метрик на сервер (в секундах)")
-	flag.DurationVar(&pollInterval, "p", 2*time.Second, "частота опроса метрик из пакета runtime (в секундах)")
-}
+var serverAddress = "http://localhost:8080"
 
 // Структура для хранения метрик
 type Metrics struct {
@@ -90,13 +81,13 @@ func (m *Metrics) SendMetric(client *http.Client, metricType, name string, value
 		return
 	}
 
-	url := fmt.Sprintf("http://%s/update/%s/%s/%s", serverAddress, metricType, name, valueStr)
+	url := fmt.Sprintf("%s/update/%s/%s/%s", serverAddress, metricType, name, valueStr)
 	req, err := http.NewRequest("POST", url, strings.NewReader(valueStr))
 	if err != nil {
 		fmt.Printf("Error creating request for %s: %v\n", name, err)
 		return
 	}
-	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("Content-Type", contentType)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -122,23 +113,8 @@ func (m *Metrics) Report() {
 }
 
 func main() {
-	// Выводим информацию о сборке
-	fmt.Printf("Build version: %s\n", buildVersion)
-	fmt.Printf("Build date: %s\n", buildDate)
-	fmt.Printf("Build commit: %s\n", buildCommit)
-
-	// Парсим флаги
-	flag.Parse()
-
-	// Проверяем неизвестные аргументы
-	if len(flag.Args()) > 0 {
-		log.Fatalf("неизвестные аргументы командной строки: %v", flag.Args())
-	}
-
-	// Преобразуем строку в полный URL, если нужно
-	if !strings.HasPrefix(serverAddress, "http://") && !strings.HasPrefix(serverAddress, "https://") {
-		serverAddress = "http://" + serverAddress
-	}
+	// Удалён устаревший вызов rand.Seed
+	// Начиная с Go 1.20, это не нужно — rand.Float64 использует глобальный источник по умолчанию
 
 	metrics := NewMetrics()
 	tickerPoll := time.NewTicker(pollInterval)
