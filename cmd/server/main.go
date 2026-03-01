@@ -1,13 +1,14 @@
 package main
 
 import (
+	"github.com/go-chi/chi/v5"
 	"html/template"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
-	"github.com/gorilla/mux"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 // Metric представляет метрику
@@ -100,9 +101,8 @@ func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vars := mux.Vars(r)
-	name := vars["name"]
-	valueStr := vars["value"]
+	name := chi.URLParam(r, "name")
+	valueStr := chi.URLParam(r, "value")
 
 	// Проверка: имя и значение не пустые
 	if name == "" || valueStr == "" {
@@ -110,7 +110,7 @@ func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch vars["type"] {
+	switch chi.URLParam(r, "type") {
 	case "gauge":
 		value, err := strconv.ParseFloat(valueStr, 64)
 		if err != nil {
@@ -138,15 +138,14 @@ func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 
 // GetValueHandler обрабатывает GET /value/{type}/{name}
 func (s *MemStorage) GetValueHandler(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	name := vars["name"]
+	name := chi.URLParam(r, "name")
 
 	if name == "" {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
 
-	switch vars["type"] {
+	switch chi.URLParam(r, "type") {
 	case "gauge":
 		value, ok := s.GetGauge(name)
 		if !ok {
@@ -203,36 +202,36 @@ func (s *MemStorage) ListMetricsHandler(w http.ResponseWriter, r *http.Request) 
 // === Основная функция — ТОЧКА ВХОДА ===
 func main() {
 	storage := NewMemStorage()
-	r := mux.NewRouter()
+	r := chi.NewRouter()
 
-	// Настройки маршрутизации
-	r.StrictSlash(false)
-	r.SkipClean(true)
-	r.UseEncodedPath()
+	// Middleware
+	r.Use(middleware.StripSlashes) // убирает завершающие слеши, но не влияет на //
+	r.Use(middleware.Recoverer)
 
 	// Валидные маршруты
-	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
-	r.HandleFunc("/value/{type}/{name}", storage.GetValueHandler).Methods("GET")
-	r.HandleFunc("/", storage.ListMetricsHandler).Methods("GET")
+	r.Post("/update/{type}/{name}/{value}", storage.UpdateHandler)
+	r.Get("/value/{type}/{name}", storage.GetValueHandler)
+	r.Get("/", storage.ListMetricsHandler)
 
-	// 🔥 Catch-all: ЛЮБОЙ другой запрос к /update/* → 404
-	// Должен быть ПОСЛЕ всех валидных маршрутов
-	r.PathPrefix("/update/").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// 🔥 Catch-all: все остальные запросы к /update/* → 404
+	// chi не имеет PathPrefix, поэтому используем Mount + Handle
+	updateRouter := chi.NewRouter()
+	updateRouter.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		// Явная проверка на двойные слеши
 		if strings.Contains(r.URL.Path, "//") {
 			http.Error(w, "Not Found", http.StatusNotFound)
 			return
 		}
-		// Или просто всегда 404 для любых других /update/*
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
+	r.Mount("/update/", updateRouter)
 
-	// Резервный обработчик
-	r.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Глобальный обработчик 404 для всех других путей
+	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
 
 	// Запуск сервера
-	log.Println("🚀 Starting server on :8080 with Gorilla Mux")
+	log.Println("🚀 Starting server on :8080 with go-chi/chi")
 	log.Fatal(http.ListenAndServe(":8080", r))
 }
