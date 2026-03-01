@@ -220,7 +220,7 @@ func main() {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
 
-	// Устанавливаем NotFoundHandler для отладки (необязательно)
+	// Устанавливаем NotFoundHandler (резервный)
 	r.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
