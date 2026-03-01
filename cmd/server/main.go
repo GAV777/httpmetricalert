@@ -1,13 +1,13 @@
 package main
 
 import (
-	"github.com/go-chi/chi/v5"
 	"html/template"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
 
@@ -199,34 +199,32 @@ func (s *MemStorage) ListMetricsHandler(w http.ResponseWriter, r *http.Request) 
 	_ = t.Execute(w, metrics)
 }
 
+// === Middleware для блокировки путей с двойными слешами ===
+func noDoubleSlashes(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "//") {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // === Основная функция — ТОЧКА ВХОДА ===
 func main() {
 	storage := NewMemStorage()
 	r := chi.NewRouter()
 
 	// Middleware
-	r.Use(middleware.StripSlashes) // убирает завершающие слеши, но не влияет на //
 	r.Use(middleware.Recoverer)
+	r.Use(noDoubleSlashes) // блокируем // до маршрутизации
 
 	// Валидные маршруты
 	r.Post("/update/{type}/{name}/{value}", storage.UpdateHandler)
 	r.Get("/value/{type}/{name}", storage.GetValueHandler)
 	r.Get("/", storage.ListMetricsHandler)
 
-	// 🔥 Catch-all: все остальные запросы к /update/* → 404
-	// chi не имеет PathPrefix, поэтому используем Mount + Handle
-	updateRouter := chi.NewRouter()
-	updateRouter.NotFound(func(w http.ResponseWriter, r *http.Request) {
-		// Явная проверка на двойные слеши
-		if strings.Contains(r.URL.Path, "//") {
-			http.Error(w, "Not Found", http.StatusNotFound)
-			return
-		}
-		http.Error(w, "Not Found", http.StatusNotFound)
-	})
-	r.Mount("/update/", updateRouter)
-
-	// Глобальный обработчик 404 для всех других путей
+	// Глобальный 404 для всех неизвестных путей
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})

@@ -1,12 +1,13 @@
 package main
 
 import (
-	"github.com/gorilla/mux"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 )
 
 func TestUpdateHandler_Gauge(t *testing.T) {
@@ -17,9 +18,9 @@ func TestUpdateHandler_Gauge(t *testing.T) {
 	req.Header.Set("Content-Type", "text/plain")
 	w := httptest.NewRecorder()
 
-	// Создаем роутер и регистрируем обработчик
-	r := mux.NewRouter()
-	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
+	// Создаем роутер chi и регистрируем обработчик
+	r := chi.NewRouter()
+	r.Post("/update/{type}/{name}/{value}", storage.UpdateHandler)
 
 	// Обрабатываем через роутер
 	r.ServeHTTP(w, req)
@@ -53,8 +54,8 @@ func TestUpdateHandler_Counter(t *testing.T) {
 	req.Header.Set("Content-Type", "text/plain")
 	w := httptest.NewRecorder()
 
-	r := mux.NewRouter()
-	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
+	r := chi.NewRouter()
+	r.Post("/update/{type}/{name}/{value}", storage.UpdateHandler)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
@@ -90,8 +91,8 @@ func TestUpdateHandler_InvalidMethod(t *testing.T) {
 	req := httptest.NewRequest("GET", "/update/gauge/temp/25.5", nil)
 	w := httptest.NewRecorder()
 
-	r := mux.NewRouter()
-	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
+	r := chi.NewRouter()
+	r.Post("/update/{type}/{name}/{value}", storage.UpdateHandler)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusMethodNotAllowed {
@@ -106,8 +107,8 @@ func TestUpdateHandler_InvalidContentType(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	r := mux.NewRouter()
-	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
+	r := chi.NewRouter()
+	r.Post("/update/{type}/{name}/{value}", storage.UpdateHandler)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
@@ -124,7 +125,7 @@ func TestUpdateHandler_InvalidPath(t *testing.T) {
 		{"too short", "/update"},
 		{"missing value", "/update/gauge/metric"},
 		{"invalid base", "/updatex/gauge/metric/100"},
-		{"empty name", "/update/gauge//100"},
+		{"empty name", "/update/gauge//100"}, // двойной слеш
 	}
 
 	for _, tt := range tests {
@@ -133,8 +134,21 @@ func TestUpdateHandler_InvalidPath(t *testing.T) {
 			req.Header.Set("Content-Type", "text/plain")
 			w := httptest.NewRecorder()
 
-			r := mux.NewRouter()
-			r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
+			r := chi.NewRouter()
+			r.Use(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if strings.Contains(r.URL.Path, "//") {
+						http.Error(w, "Not Found", http.StatusNotFound)
+						return
+					}
+					next.ServeHTTP(w, r)
+				})
+			})
+			r.Post("/update/{type}/{name}/{value}", storage.UpdateHandler)
+			r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "Not Found", http.StatusNotFound)
+			})
+
 			r.ServeHTTP(w, req)
 
 			if w.Code != http.StatusNotFound {
@@ -151,8 +165,8 @@ func TestUpdateHandler_InvalidMetricType(t *testing.T) {
 	req.Header.Set("Content-Type", "text/plain")
 	w := httptest.NewRecorder()
 
-	r := mux.NewRouter()
-	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
+	r := chi.NewRouter()
+	r.Post("/update/{type}/{name}/{value}", storage.UpdateHandler)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
@@ -167,8 +181,8 @@ func TestUpdateHandler_InvalidGaugeValue(t *testing.T) {
 	req.Header.Set("Content-Type", "text/plain")
 	w := httptest.NewRecorder()
 
-	r := mux.NewRouter()
-	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
+	r := chi.NewRouter()
+	r.Post("/update/{type}/{name}/{value}", storage.UpdateHandler)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
@@ -183,8 +197,8 @@ func TestUpdateHandler_InvalidCounterValue(t *testing.T) {
 	req.Header.Set("Content-Type", "text/plain")
 	w := httptest.NewRecorder()
 
-	r := mux.NewRouter()
-	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
+	r := chi.NewRouter()
+	r.Post("/update/{type}/{name}/{value}", storage.UpdateHandler)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
