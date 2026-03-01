@@ -113,7 +113,8 @@ func (m *Metrics) Report() {
 }
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
+	// Удалён устаревший вызов rand.Seed
+	// Начиная с Go 1.20, это не нужно — rand.Float64 использует глобальный источник по умолчанию
 
 	metrics := NewMetrics()
 	tickerPoll := time.NewTicker(pollInterval)
