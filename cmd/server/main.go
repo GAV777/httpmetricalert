@@ -2,6 +2,8 @@
 package main
 
 import (
+	"html/template"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -162,3 +164,48 @@ func (s *MemStorage) GetValueHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListMetricsHandler обрабатывает GET /
+func (s *MemStorage) ListMetricsHandler(w http.ResponseWriter, r *http.Request) {
+	metrics := s.GetAllMetrics()
+
+	tmpl := `
+<!DOCTYPE html>
+<html>
+<head><title>Метрики</title></head>
+<body>
+<h1>Список метрик</h1>
+<table border="1" style="width:100%; border-collapse: collapse;">
+<tr style="background:#eee"><th>Имя</th><th>Тип</th><th>Значение</th></tr>
+{{range .}}
+<tr>
+<td>{{.ID}}</td>
+<td>{{.MType}}</td>
+<td>{{if .Value}}{{printf "%.6f" .Value}}{{end}}{{if .Delta}}{{.Delta}}{{end}}</td>
+</tr>
+{{end}}
+</table>
+</body>
+</html>
+`
+
+	t := template.Must(template.New("metrics").Parse(tmpl))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = t.Execute(w, metrics)
+}
+
+// === Основная функция — ТОЧКА ВХОДА ===
+func main() {
+	storage := NewMemStorage()
+	r := mux.NewRouter()
+
+	// Регистрация маршрутов
+	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
+	r.HandleFunc("/value/{type}/{name}", storage.GetValueHandler).Methods("GET")
+	r.HandleFunc("/", storage.ListMetricsHandler).Methods("GET")
+
+	// Отключаем автоматические редиректы (избегаем 301)
+	r.StrictSlash(false)
+
+	// Запуск сервера
+	log.Println("Starting server on :8080")
+	log.Fatal(http.ListenAndServe(":8080", r))
+}
