@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gorilla/mux"
 )
@@ -100,16 +101,23 @@ func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 
 	vars := mux.Vars(r)
 	name := vars["name"]
+	valueStr := vars["value"]
 
-	// 🔥 Проверка: имя не должно быть пустым
-	if name == "" {
+	// 🔥 Критические проверки: имя и значение не должны быть пустыми
+	if name == "" || valueStr == "" {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
+	// 🔥 Защита от двойных слешей: если URL содержит "//", это недопустимо
+	if strings.Contains(r.URL.Path, "//") {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
 
 	switch vars["type"] {
 	case "gauge":
-		value, err := strconv.ParseFloat(vars["value"], 64)
+		value, err := strconv.ParseFloat(valueStr, 64)
 		if err != nil {
 			http.Error(w, "Invalid value", http.StatusBadRequest)
 			return
@@ -117,7 +125,7 @@ func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		s.UpdateGauge(name, value)
 
 	case "counter":
-		value, err := strconv.ParseInt(vars["value"], 10, 64)
+		value, err := strconv.ParseInt(valueStr, 10, 64)
 		if err != nil {
 			http.Error(w, "Invalid value", http.StatusBadRequest)
 			return
@@ -137,6 +145,12 @@ func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 func (s *MemStorage) GetValueHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	name := vars["name"]
+
+	// Проверка на пустое имя
+	if name == "" {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
 
 	switch vars["type"] {
 	case "gauge":
@@ -197,13 +211,16 @@ func main() {
 	storage := NewMemStorage()
 	r := mux.NewRouter()
 
+	// Включаем строгую обработку закодированных путей
+	r.UseEncodedPath()
+
+	// Отключаем автоматические редиректы вида /foo/ → /foo
+	r.StrictSlash(false)
+
 	// Регистрация маршрутов
 	r.HandleFunc("/update/{type}/{name}/{value}", storage.UpdateHandler).Methods("POST")
 	r.HandleFunc("/value/{type}/{name}", storage.GetValueHandler).Methods("GET")
 	r.HandleFunc("/", storage.ListMetricsHandler).Methods("GET")
-
-	// Отключаем автоматические редиректы (избегаем 301)
-	r.StrictSlash(false)
 
 	// Запуск сервера
 	log.Println("Starting server on :8080")
