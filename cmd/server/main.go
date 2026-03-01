@@ -2,11 +2,12 @@
 package main
 
 import (
-	"github.com/gorilla/mux"
 	"html/template"
 	"log"
 	"net/http"
 	"strconv"
+
+	"github.com/gorilla/mux"
 )
 
 // === Интерфейсы и хранилище ===
@@ -96,6 +97,7 @@ func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Проверка Content-Type
 	if r.Header.Get("Content-Type") != "text/plain" {
 		http.Error(w, "Content-Type must be text/plain", http.StatusBadRequest)
 		return
@@ -106,6 +108,7 @@ func (s *MemStorage) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 	name := vars["name"]
 	valueStr := vars["value"]
 
+	// 🔥 Критично: имя метрики не должно быть пустым
 	if name == "" {
 		http.Error(w, "Metric name is required", http.StatusNotFound)
 		return
@@ -211,13 +214,7 @@ func main() {
 	r.HandleFunc("/value/{type}/{name}", storage.GetValueHandler).Methods("GET")
 	r.HandleFunc("/", storage.ListMetricsHandler).Methods("GET")
 
-	// Настройка Content-Type middleware для /update/*
-	r.PathPrefix("/update/").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Content-Type") != "text/plain" {
-			http.Error(w, "Content-Type must be text/plain", http.StatusBadRequest)
-			return
-		}
-	}).Methods("POST")
+	// 🔁 ВАЖНО: НЕ ДОБАВЛЯЕМ PathPrefix для /update/ — это ломает 404!
 
 	addr := "localhost:8080"
 	log.Printf("Starting server on %s\n", addr)
