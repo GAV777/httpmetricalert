@@ -90,7 +90,9 @@ func (m *Metrics) SendMetric(client *http.Client, metricType, name string, value
 		return
 	}
 
-	url := fmt.Sprintf("http://%s/update/%s/%s/%s", serverAddress, metricType, name, valueStr)
+	// serverAddress уже содержит http:// или https://
+	url := fmt.Sprintf("%s/update/%s/%s/%s", serverAddress, metricType, name, valueStr)
+
 	req, err := http.NewRequest("POST", url, strings.NewReader(valueStr))
 	if err != nil {
 		fmt.Printf("Error creating request for %s: %v\n", name, err)
