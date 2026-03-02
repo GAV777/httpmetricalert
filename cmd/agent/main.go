@@ -15,16 +15,16 @@ const (
 )
 
 var (
-	serverAddress string
-	reportInt     time.Duration
-	pollInt       time.Duration
+	serverAddress  string
+	reportInterval int // в секундах
+	pollInterval   int // в секундах
 )
 
 func init() {
 	// Определяем флаги
 	flag.StringVar(&serverAddress, "a", "localhost:8080", "HTTP server address (default: localhost:8080)")
-	flag.DurationVar(&reportInt, "r", 10*time.Second, "Report interval (default: 10s)")
-	flag.DurationVar(&pollInt, "p", 2*time.Second, "Poll interval (default: 2s)")
+	flag.IntVar(&reportInterval, "r", 10, "Report interval in seconds (default: 10)")
+	flag.IntVar(&pollInterval, "p", 2, "Poll interval in seconds (default: 2)")
 }
 
 // Структура для хранения метрик
@@ -90,7 +90,7 @@ func (m *Metrics) SendMetric(client *http.Client, metricType, name string, value
 		return
 	}
 
-	// serverAddress уже содержит http:// или https://
+	// serverAddress уже содержит http:// или https:// после обработки в main
 	url := fmt.Sprintf("%s/update/%s/%s/%s", serverAddress, metricType, name, valueStr)
 
 	req, err := http.NewRequest("POST", url, strings.NewReader(valueStr))
@@ -126,25 +126,36 @@ func (m *Metrics) Report() {
 func main() {
 	flag.Parse()
 
+	// Конвертируем секунды в duration
+	reportDuration := time.Duration(reportInterval) * time.Second
+	pollDuration := time.Duration(pollInterval) * time.Second
+
 	// Если в -a не указан протокол, добавим http://
 	if !strings.HasPrefix(serverAddress, "http://") && !strings.HasPrefix(serverAddress, "https://") {
 		serverAddress = "http://" + serverAddress
 	}
 
+	// Выводим информацию о запуске
+	fmt.Printf("Starting agent with server address: %s\n", serverAddress)
+	fmt.Printf("Report interval: %v, Poll interval: %v\n", reportDuration, pollDuration)
+
 	metrics := NewMetrics()
-	tickerPoll := time.NewTicker(pollInt)
-	tickerReport := time.NewTicker(reportInt)
+	tickerPoll := time.NewTicker(pollDuration)
+	tickerReport := time.NewTicker(reportDuration)
 	defer tickerPoll.Stop()
 	defer tickerReport.Stop()
 
-	// Первичный сбор
+	// Первичный сбор метрик
 	metrics.Collect()
+	fmt.Println("Initial metrics collected")
 
 	for {
 		select {
 		case <-tickerPoll.C:
 			metrics.Collect()
+			fmt.Println("Metrics collected")
 		case <-tickerReport.C:
+			fmt.Println("Sending metrics to server...")
 			metrics.Report()
 		}
 	}
