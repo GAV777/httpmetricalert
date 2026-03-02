@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"math/rand"
 	"runtime"
@@ -10,13 +11,46 @@ import (
 	"strings"
 )
 
-const (
-	pollInterval   = 2 * time.Second
-	reportInterval = 10 * time.Second
-	contentType    = "text/plain"
-)
+// === Конфигурация из флагов ===
+type Config struct {
+	Address        string
+	ReportInterval int // в секундах
+	PollInterval   int // в секундах
+}
 
-var serverAddress = "http://localhost:8080"
+func parseFlags() *Config {
+	config := &Config{}
+
+	// Флаг -a (адрес сервера)
+	flag.StringVar(&config.Address, "a", "localhost:8080", "server address host:port")
+
+	// Флаг -r (интервал отправки метрик в секундах)
+	flag.IntVar(&config.ReportInterval, "r", 10, "report interval in seconds")
+
+	// Флаг -p (интервал опроса метрик в секундах)
+	flag.IntVar(&config.PollInterval, "p", 2, "poll interval in seconds")
+
+	// Парсим флаги
+	flag.Parse()
+
+	// Проверяем, что интервалы положительные
+	if config.ReportInterval <= 0 {
+		fmt.Println("Error: report interval must be positive")
+		flag.Usage()
+		panic("invalid report interval")
+	}
+	if config.PollInterval <= 0 {
+		fmt.Println("Error: poll interval must be positive")
+		flag.Usage()
+		panic("invalid poll interval")
+	}
+
+	return config
+}
+
+// === Агент ===
+
+const contentType = "text/plain"
 
 // Структура для хранения метрик
 type Metrics struct {
@@ -70,7 +104,7 @@ func (m *Metrics) Collect() {
 }
 
 // Отправка одной метрики на сервер
-func (m *Metrics) SendMetric(client *http.Client, metricType, name string, value interface{}) {
+func (m *Metrics) SendMetric(client *http.Client, serverAddr, metricType, name string, value interface{}) {
 	var valueStr string
 	switch v := value.(type) {
 	case int64:
@@ -81,7 +115,8 @@ func (m *Metrics) SendMetric(client *http.Client, metricType, name string, value
 		return
 	}
 
-	url := fmt.Sprintf("%s/update/%s/%s/%s", serverAddress, metricType, name, valueStr)
+	// Формируем полный URL с адресом сервера
+	url := fmt.Sprintf("http://%s/update/%s/%s/%s", serverAddr, metricType, name, valueStr)
 	req, err := http.NewRequest("POST", url, strings.NewReader(valueStr))
 	if err != nil {
 		fmt.Printf("Error creating request for %s: %v\n", name, err)
@@ -102,23 +137,33 @@ func (m *Metrics) SendMetric(client *http.Client, metricType, name string, value
 }
 
 // Отправка всех метрик
-func (m *Metrics) Report() {
+func (m *Metrics) Report(serverAddr string) {
 	client := &http.Client{}
 	for name, value := range m.Gauge {
-		m.SendMetric(client, "gauge", name, value)
+		m.SendMetric(client, serverAddr, "gauge", name, value)
 	}
 	for name, value := range m.Counter {
-		m.SendMetric(client, "counter", name, value)
+		m.SendMetric(client, serverAddr, "counter", name, value)
 	}
 }
 
 func main() {
-	// Удалён устаревший вызов rand.Seed
-	// Начиная с Go 1.20, это не нужно — rand.Float64 использует глобальный источник по умолчанию
+	// Парсим флаги
+	config := parseFlags()
+
+	// Выводим конфигурацию для отладки
+	fmt.Printf("Agent started with config:\n")
+	fmt.Printf("  Server address: %s\n", config.Address)
+	fmt.Printf("  Report interval: %d seconds\n", config.ReportInterval)
+	fmt.Printf("  Poll interval: %d seconds\n", config.PollInterval)
+
+	// Преобразуем секунды в time.Duration
+	pollDuration := time.Duration(config.PollInterval) * time.Second
+	reportDuration := time.Duration(config.ReportInterval) * time.Second
 
 	metrics := NewMetrics()
-	tickerPoll := time.NewTicker(pollInterval)
-	tickerReport := time.NewTicker(reportInterval)
+	tickerPoll := time.NewTicker(pollDuration)
+	tickerReport := time.NewTicker(reportDuration)
 	defer tickerPoll.Stop()
 	defer tickerReport.Stop()
 
@@ -130,7 +175,7 @@ func main() {
 		case <-tickerPoll.C:
 			metrics.Collect()
 		case <-tickerReport.C:
-			metrics.Report()
+			metrics.Report(config.Address)
 		}
 	}
 }

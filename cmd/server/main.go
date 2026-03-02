@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"html/template"
 	"log"
 	"net/http"
@@ -216,8 +217,28 @@ func noDoubleSlashes(next http.Handler) http.Handler {
 	})
 }
 
+// === Флаги командной строки ===
+type Config struct {
+	Address string
+}
+
+func parseFlags() *Config {
+	config := &Config{}
+
+	// Определяем флаг -a с значением по умолчанию "localhost:8080"
+	flag.StringVar(&config.Address, "a", "localhost:8080", "server address host:port")
+
+	// Парсим флаги
+	flag.Parse()
+
+	return config
+}
+
 // === Основная функция — ТОЧКА ВХОДА ===
 func main() {
+	// Парсим флаги
+	config := parseFlags()
+
 	storage := NewMemStorage()
 	r := chi.NewRouter()
 
@@ -235,7 +256,7 @@ func main() {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
 
-	// Запуск сервера
-	log.Println("🚀 Starting server on :8080 with go-chi/chi")
-	log.Fatal(http.ListenAndServe(":8080", r))
+	// Запуск сервера с адресом из флага
+	log.Printf("🚀 Starting server on %s with go-chi/chi", config.Address)
+	log.Fatal(http.ListenAndServe(config.Address, r))
 }
