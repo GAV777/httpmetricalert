@@ -217,46 +217,37 @@ func noDoubleSlashes(next http.Handler) http.Handler {
 	})
 }
 
-// === Флаги командной строки ===
-type Config struct {
-	Address string
-}
-
-func parseFlags() *Config {
-	config := &Config{}
-
-	// Определяем флаг -a с значением по умолчанию "localhost:8080"
-	flag.StringVar(&config.Address, "a", "localhost:8080", "server address host:port")
+// === Основная функция — ТОЧКА ВХОДА ===
+func main() {
+	// Определяем флаг -a для адреса сервера
+	addr := flag.String("a", "localhost:8080", "адрес эндпоинта HTTP-сервера")
 
 	// Парсим флаги
 	flag.Parse()
 
-	return config
-}
-
-// === Основная функция — ТОЧКА ВХОДА ===
-func main() {
-	// Парсим флаги
-	config := parseFlags()
+	// Проверяем на неизвестные флаги
+	if len(flag.Args()) > 0 {
+		log.Fatalf("неизвестные аргументы командной строки: %v", flag.Args())
+	}
 
 	storage := NewMemStorage()
 	r := chi.NewRouter()
 
 	// Middleware
 	r.Use(middleware.Recoverer)
-	r.Use(noDoubleSlashes) // блокируем // до маршрутизации
+	r.Use(noDoubleSlashes)
 
 	// Валидные маршруты
 	r.Post("/update/{type}/{name}/{value}", storage.UpdateHandler)
 	r.Get("/value/{type}/{name}", storage.GetValueHandler)
 	r.Get("/", storage.ListMetricsHandler)
 
-	// Глобальный 404 для всех неизвестных путей
+	// Глобальный 404
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
 
-	// Запуск сервера с адресом из флага
-	log.Printf("🚀 Starting server on %s with go-chi/chi", config.Address)
-	log.Fatal(http.ListenAndServe(config.Address, r))
+	// Запуск сервера
+	log.Printf("🚀 Starting server on %s", *addr)
+	log.Fatal(http.ListenAndServe(*addr, r))
 }
