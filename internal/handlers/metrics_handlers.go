@@ -59,8 +59,10 @@ func (h *MetricsHandler) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Извлекаем параметры из URL
 	name := chi.URLParam(r, "name")
 	valueStr := chi.URLParam(r, "value")
+	metricType := chi.URLParam(r, "type")
 
 	name = strings.TrimSpace(name)
 	valueStr = strings.TrimSpace(valueStr)
@@ -70,7 +72,7 @@ func (h *MetricsHandler) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch chi.URLParam(r, "type") {
+	switch metricType {
 	case "gauge":
 		value, err := strconv.ParseFloat(valueStr, 64)
 		if err != nil {

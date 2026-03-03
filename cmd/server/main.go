@@ -1,36 +1,44 @@
-// cmd/server/main.go
 package main
 
 import (
 	"flag"
-	"github.com/GAV777/httpmetricalert/internal/handlers"
-	"github.com/GAV777/httpmetricalert/internal/storage"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
+	"github.com/GAV777/httpmetricalert/internal/handlers"
+	"github.com/GAV777/httpmetricalert/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-// === Middleware для блокировки путей с двойными слешами ===
-func noDoubleSlashes(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "//") {
-			http.Error(w, "Not Found", http.StatusNotFound)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+var (
+	serverAddress string
+)
+
+func init() {
+	addr := getEnvOrDefault("ADDRESS", "localhost:8080")
+	flag.StringVar(&serverAddress, "a", addr, "адрес эндпоинта HTTP-сервера")
 }
 
-// === Основная функция — ТОЧКА ВХОДА ===
+// getEnvOrDefault возвращает значение переменной окружения или значение по умолчанию
+func getEnvOrDefault(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return defaultValue
+}
+
 func main() {
-	addr := flag.String("a", "localhost:8080", "адрес эндпоинта HTTP-сервера")
 	flag.Parse()
 
 	if len(flag.Args()) > 0 {
 		log.Fatalf("неизвестные аргументы командной строки: %v", flag.Args())
+	}
+
+	if !strings.HasPrefix(serverAddress, "http://") && !strings.HasPrefix(serverAddress, "https://") {
+		serverAddress = "http://" + serverAddress
 	}
 
 	// Создаём хранилище
@@ -54,6 +62,17 @@ func main() {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
 
-	log.Printf("🚀 Starting server on %s", *addr)
-	log.Fatal(http.ListenAndServe(*addr, r))
+	log.Printf("🚀 Starting server on %s", serverAddress)
+	log.Fatal(http.ListenAndServe(serverAddress, r))
+}
+
+// noDoubleSlashes блокирует пути с двойными слешами
+func noDoubleSlashes(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "//") {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
