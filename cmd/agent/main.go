@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,16 +22,16 @@ var (
 )
 
 func init() {
-	// Определяем флаги
 	flag.StringVar(&serverAddress, "a", "localhost:8080", "HTTP server address (default: localhost:8080)")
 	flag.IntVar(&reportInterval, "r", 10, "Report interval in seconds (default: 10)")
 	flag.IntVar(&pollInterval, "p", 2, "Poll interval in seconds (default: 2)")
 }
 
-// Структура для хранения метрик
+// Metrics хранит метрики с мьютексом для потокобезопасности
 type Metrics struct {
 	Gauge   map[string]float64
 	Counter map[string]int64
+	mu      sync.RWMutex // защита чтения/записи
 }
 
 func NewMetrics() *Metrics {
@@ -40,10 +41,13 @@ func NewMetrics() *Metrics {
 	}
 }
 
-// Сбор метрик из runtime
+// Collect собирает метрики из runtime — требует блокировки на запись
 func (m *Metrics) Collect() {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	m.Gauge["Alloc"] = float64(memStats.Alloc)
 	m.Gauge["BuckHashSys"] = float64(memStats.BuckHashSys)
@@ -73,13 +77,12 @@ func (m *Metrics) Collect() {
 	m.Gauge["Sys"] = float64(memStats.Sys)
 	m.Gauge["TotalAlloc"] = float64(memStats.TotalAlloc)
 
-	// Дополнительные метрики
 	m.Gauge["RandomValue"] = rand.Float64()
 	m.Counter["PollCount"]++
 }
 
-// Отправка одной метрики на сервер
-func (m *Metrics) SendMetric(client *http.Client, metricType, name string, value interface{}) {
+// SendMetricWithClient отправляет одну метрику на указанный baseURL
+func (m *Metrics) SendMetricWithClient(client *http.Client, baseURL, metricType, name string, value interface{}) {
 	var valueStr string
 	switch v := value.(type) {
 	case int64:
@@ -90,8 +93,7 @@ func (m *Metrics) SendMetric(client *http.Client, metricType, name string, value
 		return
 	}
 
-	// serverAddress уже содержит http:// или https:// после обработки в main
-	url := fmt.Sprintf("%s/update/%s/%s/%s", serverAddress, metricType, name, valueStr)
+	url := fmt.Sprintf("%s/update/%s/%s/%s", baseURL, metricType, name, valueStr)
 
 	req, err := http.NewRequest("POST", url, strings.NewReader(valueStr))
 	if err != nil {
@@ -112,30 +114,39 @@ func (m *Metrics) SendMetric(client *http.Client, metricType, name string, value
 	}
 }
 
-// Отправка всех метрик
-func (m *Metrics) Report() {
+// ReportWithBaseURL отправляет все метрики на указанный сервер
+func (m *Metrics) ReportWithBaseURL(baseURL string) {
 	client := &http.Client{}
-	for name, value := range m.Gauge {
-		m.SendMetric(client, "gauge", name, value)
+
+	m.mu.RLock()
+	gauges := make(map[string]float64, len(m.Gauge))
+	for k, v := range m.Gauge {
+		gauges[k] = v
 	}
-	for name, value := range m.Counter {
-		m.SendMetric(client, "counter", name, value)
+	counters := make(map[string]int64, len(m.Counter))
+	for k, v := range m.Counter {
+		counters[k] = v
+	}
+	m.mu.RUnlock()
+
+	for name, value := range gauges {
+		m.SendMetricWithClient(client, baseURL, "gauge", name, value)
+	}
+	for name, value := range counters {
+		m.SendMetricWithClient(client, baseURL, "counter", name, value)
 	}
 }
 
 func main() {
 	flag.Parse()
 
-	// Конвертируем секунды в duration
 	reportDuration := time.Duration(reportInterval) * time.Second
 	pollDuration := time.Duration(pollInterval) * time.Second
 
-	// Если в -a не указан протокол, добавим http://
 	if !strings.HasPrefix(serverAddress, "http://") && !strings.HasPrefix(serverAddress, "https://") {
 		serverAddress = "http://" + serverAddress
 	}
 
-	// Выводим информацию о запуске
 	fmt.Printf("Starting agent with server address: %s\n", serverAddress)
 	fmt.Printf("Report interval: %v, Poll interval: %v\n", reportDuration, pollDuration)
 
@@ -145,7 +156,6 @@ func main() {
 	defer tickerPoll.Stop()
 	defer tickerReport.Stop()
 
-	// Первичный сбор метрик
 	metrics.Collect()
 	fmt.Println("Initial metrics collected")
 
@@ -156,7 +166,7 @@ func main() {
 			fmt.Println("Metrics collected")
 		case <-tickerReport.C:
 			fmt.Println("Sending metrics to server...")
-			metrics.Report()
+			metrics.ReportWithBaseURL(serverAddress)
 		}
 	}
 }
