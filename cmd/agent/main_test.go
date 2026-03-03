@@ -1,11 +1,9 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 )
@@ -39,62 +37,6 @@ func TestMetrics_Collect(t *testing.T) {
 	metrics.Collect()
 	if metrics.Counter["PollCount"] != 2 {
 		t.Errorf("Expected PollCount = 2 after second collect, got %d", metrics.Counter["PollCount"])
-	}
-}
-
-// SendMetricWithClient отправляет метрику, используя указанный базовый URL
-func (m *Metrics) SendMetricWithClient(client *http.Client, baseURL, metricType, name string, value interface{}) {
-	var valueStr string
-	switch v := value.(type) {
-	case int64:
-		valueStr = fmt.Sprintf("%d", v)
-	case float64:
-		valueStr = fmt.Sprintf("%g", v)
-	default:
-		return
-	}
-
-	url := fmt.Sprintf("%s/update/%s/%s/%s", baseURL, metricType, name, valueStr)
-
-	req, err := http.NewRequest("POST", url, strings.NewReader(valueStr))
-	if err != nil {
-		fmt.Printf("Error creating request for %s: %v\n", name, err)
-		return
-	}
-	req.Header.Set("Content-Type", contentType)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Printf("Error sending metric %s: %v\n", name, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("Error response for %s: %s\n", name, resp.Status)
-	}
-}
-
-// ReportWithBaseURL отправляет метрики на указанный URL
-func (m *Metrics) ReportWithBaseURL(baseURL string) {
-	client := &http.Client{}
-
-	m.mu.RLock()
-	gauges := make(map[string]float64, len(m.Gauge))
-	for k, v := range m.Gauge {
-		gauges[k] = v
-	}
-	counters := make(map[string]int64, len(m.Counter))
-	for k, v := range m.Counter {
-		counters[k] = v
-	}
-	m.mu.RUnlock()
-
-	for name, value := range gauges {
-		m.SendMetricWithClient(client, baseURL, "gauge", name, value)
-	}
-	for name, value := range counters {
-		m.SendMetricWithClient(client, baseURL, "counter", name, value)
 	}
 }
 
@@ -147,8 +89,8 @@ func TestMetrics_SendMetric_Counter(t *testing.T) {
 func TestMetrics_Report(t *testing.T) {
 	t.Parallel()
 
-	reportCalled := 0
-	var mu sync.Mutex // защищаем счётчик при параллельных запросах
+	var reportCalled int
+	var mu sync.Mutex
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
