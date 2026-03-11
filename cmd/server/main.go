@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	serverAddress string
+	serverAddress string // будет содержать только host:port, например "localhost:8080"
 )
 
 func init() {
@@ -37,8 +37,19 @@ func main() {
 		log.Fatalf("неизвестные аргументы командной строки: %v", flag.Args())
 	}
 
-	if !strings.HasPrefix(serverAddress, "http://") && !strings.HasPrefix(serverAddress, "https://") {
-		serverAddress = "http://" + serverAddress
+	// Убедимся, что serverAddress не содержит http:// или https://
+	// Очищаем от префикса, если есть
+	cleanAddr := strings.TrimPrefix(serverAddress, "http://")
+	cleanAddr = strings.TrimPrefix(cleanAddr, "https://")
+
+	// Проверяем, что после очистки осталось что-то
+	if cleanAddr == "" {
+		log.Fatal("Invalid address: ADDRESS cannot be empty")
+	}
+
+	// Разрешаем только формат host:port или :port
+	if !strings.Contains(cleanAddr, ":") {
+		log.Fatal("Invalid address format: expected host:port or :port")
 	}
 
 	// Создаём хранилище
@@ -62,8 +73,8 @@ func main() {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
 
-	log.Printf("🚀 Starting server on %s", serverAddress)
-	log.Fatal(http.ListenAndServe(serverAddress, r))
+	log.Printf("🚀 Starting server on %s", cleanAddr)
+	log.Fatal(http.ListenAndServe(cleanAddr, r))
 }
 
 // noDoubleSlashes блокирует пути с двойными слешами
