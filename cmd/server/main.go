@@ -10,7 +10,9 @@ import (
 	"github.com/GAV777/httpmetricalert/internal/handlers"
 	"github.com/GAV777/httpmetricalert/internal/storage"
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/hlog"
+	"time"
 )
 
 var (
@@ -52,7 +54,11 @@ func main() {
 		log.Fatal("Invalid address format: expected host:port or :port")
 	}
 
-	// Создаём хранилище
+	// Настраиваем глобальный логгер (вывод в stdout)
+	zerolog.TimeFieldFormat = time.RFC3339
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+
+	// Создаём хранилище и хендлеры
 	storage := storage.NewMemStorage()
 
 	// Создаём хендлеры с внедрением зависимости
@@ -60,7 +66,24 @@ func main() {
 
 	r := chi.NewRouter()
 
-	r.Use(middleware.Recoverer)
+	// Middleware: логгер
+	r.Use(hlog.NewHandler(zerolog.New(os.Stdout)))
+
+	// Логируем начало запроса
+	r.Use(hlog.AccessHandler(func(r *http.Request, status, size int, duration time.Duration) {
+		hlog.FromRequest(r).Info().
+			Str("method", r.Method).
+			Str("uri", r.RequestURI).
+			Int("status", status).
+			Int("size", size).
+			Dur("duration", duration).
+			Msg("handled request")
+	}))
+
+	// Логируем время выполнения
+	r.Use(hlog.RequestIDHandler("req_id", "Request-Id"))
+
+	// Защита от двойных слешей
 	r.Use(noDoubleSlashes)
 
 	// Маршруты
