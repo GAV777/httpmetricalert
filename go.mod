@@ -1,6 +1,6 @@
 module github.com/GAV777/httpmetricalert
 
-go 1.24.0
+go 1.25.0
 
 
 
