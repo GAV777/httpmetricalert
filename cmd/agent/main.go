@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -159,50 +157,10 @@ func (m *Metrics) ReportWithBaseURL(baseURL string) {
 	m.mu.RUnlock()
 
 	for name, value := range gauges {
-		metric := model.Metrics{
-			ID:    name,
-			MType: "gauge",
-			Value: &value,
-		}
-		m.sendJSON(baseURL, metric)
+		m.SendMetricWithClient(client, baseURL, "gauge", name, value)
 	}
 	for name, value := range counters {
-		delta := value
-		metric := model.Metrics{
-			ID:    name,
-			MType: "counter",
-			Delta: &delta,
-		}
-		m.sendJSON(baseURL, metric)
-	}
-}
-
-// sendJSON отправляет одну метрику в формате JSON
-func (m *Metrics) sendJSON(baseURL string, metric model.Metrics) {
-	data, err := json.Marshal(metric)
-	if err != nil {
-		fmt.Printf("Error marshaling metric %s: %v\n", metric.ID, err)
-		return
-	}
-
-	url := fmt.Sprintf("%s/update", baseURL)
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
-	if err != nil {
-		fmt.Printf("Error creating request for %s: %v\n", metric.ID, err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Printf("Error sending metric %s: %v\n", metric.ID, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("Error response for %s: %s\n", metric.ID, resp.Status)
+		m.SendMetricWithClient(client, baseURL, "counter", name, value)
 	}
 }
 

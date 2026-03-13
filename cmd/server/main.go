@@ -87,8 +87,6 @@ func main() {
 	r.Use(noDoubleSlashes)
 
 	// Маршруты
-	r.Post("/update", handler.UpdateJSONHandler)
-	r.Post("/value", handler.GetValueJSONHandler)
 	r.Post("/update/{type}/{name}/{value}", handler.UpdateHandler)
 	r.Get("/value/{type}/{name}", handler.GetValueHandler)
 	r.Get("/", handler.ListMetricsHandler)
