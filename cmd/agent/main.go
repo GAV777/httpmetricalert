@@ -1,11 +1,18 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/GAV777/httpmetricalert/internal/model"
+	"io"
+	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,16 +29,40 @@ var (
 )
 
 func init() {
-	flag.StringVar(&serverAddress, "a", "localhost:8080", "HTTP server address (default: localhost:8080)")
-	flag.IntVar(&reportInterval, "r", 10, "Report interval in seconds (default: 10)")
-	flag.IntVar(&pollInterval, "p", 2, "Poll interval in seconds (default: 2)")
+	// Читаем переменные окружения
+	addr := getEnvOrDefault("ADDRESS", "localhost:8080")
+	reportStr := getEnvOrDefault("REPORT_INTERVAL", "10")
+	pollStr := getEnvOrDefault("POLL_INTERVAL", "2")
+
+	// Определяем флаги
+	flag.StringVar(&serverAddress, "a", addr, "HTTP server address")
+	flag.IntVar(&reportInterval, "r", parseIntOrPanic(reportStr, "REPORT_INTERVAL"), "Report interval in seconds")
+	flag.IntVar(&pollInterval, "p", parseIntOrPanic(pollStr, "POLL_INTERVAL"), "Poll interval in seconds")
+}
+
+// getEnvOrDefault возвращает значение переменной окружения или значение по умолчанию
+func getEnvOrDefault(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return defaultValue
+}
+
+// parseIntOrPanic парсит строку в int, паникует при ошибке (только для инициализации)
+func parseIntOrPanic(s, context string) int {
+	if n, err := strconv.Atoi(s); err == nil {
+		return n
+	} else {
+		log.Fatalf("Invalid value for %s: %s (must be integer)", context, s)
+		panic("unreachable")
+	}
 }
 
 // Metrics хранит метрики с мьютексом для потокобезопасности
 type Metrics struct {
 	Gauge   map[string]float64
 	Counter map[string]int64
-	mu      sync.RWMutex // защита чтения/записи
+	mu      sync.RWMutex
 }
 
 func NewMetrics() *Metrics {
@@ -130,10 +161,51 @@ func (m *Metrics) ReportWithBaseURL(baseURL string) {
 	m.mu.RUnlock()
 
 	for name, value := range gauges {
-		m.SendMetricWithClient(client, baseURL, "gauge", name, value)
+		metric := model.Metrics{
+			ID:    name,
+			MType: "gauge",
+			Value: &value,
+		}
+		m.sendJSON(client, baseURL, metric)
 	}
 	for name, value := range counters {
-		m.SendMetricWithClient(client, baseURL, "counter", name, value)
+		delta := value
+		metric := model.Metrics{
+			ID:    name,
+			MType: "counter",
+			Delta: &delta,
+		}
+		m.sendJSON(client, baseURL, metric)
+	}
+}
+
+// sendJSON отправляет одну метрику в формате JSON
+func (m *Metrics) sendJSON(client *http.Client, baseURL string, metric model.Metrics) {
+	data, err := json.Marshal(metric)
+	if err != nil {
+		fmt.Printf("Error marshaling metric %s: %v\n", metric.ID, err)
+		return
+	}
+
+	url := fmt.Sprintf("%s/update", baseURL)
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
+	if err != nil {
+		fmt.Printf("Error creating request for %s: %v\n", metric.ID, err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("Error sending metric %s: %v\n", metric.ID, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("Failed to send metric %s: %d %s", metric.ID, resp.StatusCode, string(body))
 	}
 }
 
