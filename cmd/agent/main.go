@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/GAV777/httpmetricalert/internal/model"
 	"log"
 	"math/rand"
 	"net/http"
@@ -145,7 +146,6 @@ func (m *Metrics) SendMetricWithClient(client *http.Client, baseURL, metricType,
 
 // ReportWithBaseURL отправляет все метрики на указанный сервер
 func (m *Metrics) ReportWithBaseURL(baseURL string) {
-	client := &http.Client{}
 
 	m.mu.RLock()
 	gauges := make(map[string]float64, len(m.Gauge))
@@ -159,7 +159,7 @@ func (m *Metrics) ReportWithBaseURL(baseURL string) {
 	m.mu.RUnlock()
 
 	for name, value := range gauges {
-		metric := model.Metrics{
+		metric := models.Metrics{
 			ID:    name,
 			MType: "gauge",
 			Value: &value,
@@ -168,7 +168,7 @@ func (m *Metrics) ReportWithBaseURL(baseURL string) {
 	}
 	for name, value := range counters {
 		delta := value
-		metric := model.Metrics{
+		metric := models.Metrics{
 			ID:    name,
 			MType: "counter",
 			Delta: &delta,
@@ -178,7 +178,7 @@ func (m *Metrics) ReportWithBaseURL(baseURL string) {
 }
 
 // sendJSON отправляет одну метрику в формате JSON
-func (m *Metrics) sendJSON(baseURL string, metric model.Metrics) {
+func (m *Metrics) sendJSON(baseURL string, metric models.Metrics) {
 	data, err := json.Marshal(metric)
 	if err != nil {
 		fmt.Printf("Error marshaling metric %s: %v\n", metric.ID, err)
