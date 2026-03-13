@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	models "github.com/GAV777/httpmetricalert/internal/model"
 	"github.com/GAV777/httpmetricalert/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"html/template"
@@ -147,7 +148,7 @@ func (h *MetricsHandler) ListMetricsHandler(w http.ResponseWriter, r *http.Reque
 
 // UpdateJSONHandler обрабатывает POST /update в формате JSON
 func (h *MetricsHandler) UpdateJSONHandler(w http.ResponseWriter, r *http.Request) {
-	var metric model.Metrics
+	var metric models.Metrics
 	if err := json.NewDecoder(r.Body).Decode(&metric); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
@@ -181,7 +182,7 @@ func (h *MetricsHandler) UpdateJSONHandler(w http.ResponseWriter, r *http.Reques
 
 // GetValueJSONHandler обрабатывает POST /value в формате JSON
 func (h *MetricsHandler) GetValueJSONHandler(w http.ResponseWriter, r *http.Request) {
-	var req model.Metrics
+	var req models.Metrics
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
@@ -196,7 +197,7 @@ func (h *MetricsHandler) GetValueJSONHandler(w http.ResponseWriter, r *http.Requ
 			http.Error(w, "Metric not found", http.StatusNotFound)
 			return
 		}
-		resp := model.Metrics{
+		resp := models.Metrics{
 			ID:    req.ID,
 			MType: "gauge",
 			Value: &value,
@@ -209,7 +210,7 @@ func (h *MetricsHandler) GetValueJSONHandler(w http.ResponseWriter, r *http.Requ
 			http.Error(w, "Metric not found", http.StatusNotFound)
 			return
 		}
-		resp := model.Metrics{
+		resp := models.Metrics{
 			ID:    req.ID,
 			MType: "counter",
 			Delta: &value,
