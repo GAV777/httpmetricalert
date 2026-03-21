@@ -216,3 +216,10 @@ func main() {
 		}
 	}
 }
+func newFloat64(v float64) *float64 {
+	return &v
+}
+
+func newInt64(v int64) *int64 {
+	return &v
+}
