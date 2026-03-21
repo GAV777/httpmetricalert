@@ -93,7 +93,7 @@ func (h *MetricsHandler) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid value", http.StatusBadRequest)
 			return
 		}
-		h.Storage.UpdateGauge(name, value)
+		h.Storage.SetGauge(name, value)
 
 	case "counter":
 		value, err := strconv.ParseInt(valueStr, 10, 64)
@@ -101,7 +101,7 @@ func (h *MetricsHandler) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid value", http.StatusBadRequest)
 			return
 		}
-		h.Storage.UpdateCounter(name, value)
+		h.Storage.SetCounter(name, value)
 
 	default:
 		http.Error(w, "Invalid type", http.StatusBadRequest)
@@ -149,7 +149,7 @@ func (h *MetricsHandler) GetValueHandler(w http.ResponseWriter, r *http.Request)
 
 // ListMetricsHandler обрабатывает GET /
 func (h *MetricsHandler) ListMetricsHandler(w http.ResponseWriter, r *http.Request) {
-	metrics := h.Storage.GetAllMetrics()
+	metrics := h.Storage.GetAll()
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.Tmpl.Execute(w, metrics); err != nil {
@@ -174,14 +174,14 @@ func (h *MetricsHandler) UpdateJSONHandler(w http.ResponseWriter, r *http.Reques
 			http.Error(w, "Missing value for gauge", http.StatusBadRequest)
 			return
 		}
-		h.Storage.UpdateGauge(metric.ID, *metric.Value)
+		h.Storage.SetGauge(metric.ID, *metric.Value)
 
 	case "counter":
 		if metric.Delta == nil {
 			http.Error(w, "Missing delta for counter", http.StatusBadRequest)
 			return
 		}
-		h.Storage.UpdateCounter(metric.ID, *metric.Delta)
+		h.Storage.SetCounter(metric.ID, *metric.Delta)
 
 	default:
 		http.Error(w, "Unsupported metric type", http.StatusBadRequest)
