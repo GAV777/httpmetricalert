@@ -1,35 +1,27 @@
 package main
 
 import (
-	"github.com/GAV777/httpmetricalert/internal/config"
-	"github.com/GAV777/httpmetricalert/internal/handlers"
-	"github.com/GAV777/httpmetricalert/internal/middleware"
-	"github.com/GAV777/httpmetricalert/internal/storage"
-	"log"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/rs/zerolog"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/GAV777/httpmetricalert/internal/handlers"
 	"github.com/go-chi/chi/v5"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
 )
 
 func setupRouter(handler *handlers.MetricsHandler) http.Handler {
 	r := chi.NewRouter()
 
-	// Логирование
+	// Middleware
 	r.Use(hlog.NewHandler(zerolog.New(os.Stdout)))
 	r.Use(hlog.AccessHandler(accessLog))
 	r.Use(hlog.RequestIDHandler("req_id", "Request-Id"))
-
-	// Защита от двойных слешей
-	r.Use(noDoubleSlashes)
-	r.Use(middleware.StripSlashes)
-
-	// === Добавляем gzip middleware ===
-	r.Use(middleware.GzipMiddleware)
+	r.Use(noDoubleSlashes)         // Запрещает двойные слэшы
+	r.Use(middleware.StripSlashes) // Удаляет слеши в конце, чтобы /value и /value/ были одинаковыми
 
 	// Маршруты
 	r.Post("/update", handler.UpdateJSONHandler)
@@ -38,6 +30,7 @@ func setupRouter(handler *handlers.MetricsHandler) http.Handler {
 	r.Get("/value/{type}/{name}", handler.GetValueHandler)
 	r.Get("/", handler.ListMetricsHandler)
 
+	// Глобальный 404
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
@@ -63,22 +56,4 @@ func noDoubleSlashes(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-func setupLogger() {
-	zerolog.TimeFieldFormat = "2006-01-02T15:04:05Z07:00"
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-}
-
-func main() {
-	setupLogger()
-
-	addr := config.GetServerAddress()
-	store := storage.NewMemStorage()
-	handler := handlers.NewMetricsHandler(store)
-
-	router := setupRouter(handler)
-
-	log.Printf("Starting server on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, router))
 }

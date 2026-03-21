@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -29,18 +30,15 @@ var (
 )
 
 func init() {
-	// Читаем переменные окружения
 	addr := getEnvOrDefault("ADDRESS", "localhost:8080")
 	reportStr := getEnvOrDefault("REPORT_INTERVAL", "10")
 	pollStr := getEnvOrDefault("POLL_INTERVAL", "2")
 
-	// Определяем флаги
 	flag.StringVar(&serverAddress, "a", addr, "HTTP server address")
 	flag.IntVar(&reportInterval, "r", parseIntOrPanic(reportStr, "REPORT_INTERVAL"), "Report interval in seconds")
 	flag.IntVar(&pollInterval, "p", parseIntOrPanic(pollStr, "POLL_INTERVAL"), "Poll interval in seconds")
 }
 
-// getEnvOrDefault возвращает значение переменной окружения или значение по умолчанию
 func getEnvOrDefault(key, defaultValue string) string {
 	if value, exists := os.LookupEnv(key); exists {
 		return value
@@ -48,7 +46,6 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-// parseIntOrPanic парсит строку в int, паникует при ошибке (только для инициализации)
 func parseIntOrPanic(s, context string) int {
 	if n, err := strconv.Atoi(s); err == nil {
 		return n
@@ -58,7 +55,6 @@ func parseIntOrPanic(s, context string) int {
 	}
 }
 
-// Metrics хранит метрики с мьютексом для потокобезопасности
 type Metrics struct {
 	Gauge   map[string]float64
 	Counter map[string]int64
@@ -72,7 +68,6 @@ func NewMetrics() *Metrics {
 	}
 }
 
-// Collect собирает метрики из runtime — требует блокировки на запись
 func (m *Metrics) Collect() {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
@@ -112,40 +107,6 @@ func (m *Metrics) Collect() {
 	m.Counter["PollCount"]++
 }
 
-// SendMetricWithClient отправляет одну метрику на указанный baseURL
-func (m *Metrics) SendMetricWithClient(client *http.Client, baseURL, metricType, name string, value interface{}) {
-	var valueStr string
-	switch v := value.(type) {
-	case int64:
-		valueStr = fmt.Sprintf("%d", v)
-	case float64:
-		valueStr = fmt.Sprintf("%g", v)
-	default:
-		return
-	}
-
-	url := fmt.Sprintf("%s/update/%s/%s/%s", baseURL, metricType, name, valueStr)
-
-	req, err := http.NewRequest("POST", url, strings.NewReader(valueStr))
-	if err != nil {
-		fmt.Printf("Error creating request for %s: %v\n", name, err)
-		return
-	}
-	req.Header.Set("Content-Type", contentType)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Printf("Error sending metric %s: %v\n", name, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("Error response for %s: %s\n", name, resp.Status)
-	}
-}
-
-// ReportWithBaseURL отправляет все метрики на указанный сервер
 func (m *Metrics) ReportWithBaseURL(baseURL string) {
 	client := &http.Client{}
 
@@ -179,7 +140,7 @@ func (m *Metrics) ReportWithBaseURL(baseURL string) {
 	}
 }
 
-// sendJSON отправляет одну метрику в формате JSON
+// sendJSON отправляет метрику в формате JSON, сжатую gzip
 func (m *Metrics) sendJSON(client *http.Client, baseURL string, metric model.Metrics) {
 	data, err := json.Marshal(metric)
 	if err != nil {
@@ -187,14 +148,27 @@ func (m *Metrics) sendJSON(client *http.Client, baseURL string, metric model.Met
 		return
 	}
 
-	url := fmt.Sprintf("%s/update", baseURL)
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(data); err != nil {
+		fmt.Printf("Error compressing data for %s: %v\n", metric.ID, err)
+		return
+	}
+	if err := gz.Close(); err != nil {
+		fmt.Printf("Error closing gzip writer for %s: %v\n", metric.ID, err)
+		return
+	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
+	url := fmt.Sprintf("%s/update", baseURL)
+	req, err := http.NewRequest("POST", url, &buf)
 	if err != nil {
 		fmt.Printf("Error creating request for %s: %v\n", metric.ID, err)
 		return
 	}
+
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", "gzip")
 
 	resp, err := client.Do(req)
 	if err != nil {
