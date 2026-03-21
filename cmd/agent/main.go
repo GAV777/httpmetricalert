@@ -59,6 +59,7 @@ func parseIntOrPanic(s, context string) int {
 type Metrics struct {
 	Gauge   map[string]float64
 	Counter map[string]int64
+	Client  *http.Client
 	mu      sync.RWMutex
 }
 
@@ -66,6 +67,7 @@ func NewMetrics() *Metrics {
 	return &Metrics{
 		Gauge:   make(map[string]float64),
 		Counter: make(map[string]int64),
+		Client:  &http.Client{},
 	}
 }
 

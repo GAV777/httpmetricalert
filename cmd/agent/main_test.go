@@ -62,6 +62,7 @@ func TestMetrics_SendMetric_Gauge(t *testing.T) {
 
 	client := &http.Client{}
 	metrics := NewMetrics()
+	metrics.ReportWithBaseURL("http://localhost:8080")
 	// Отправка через JSON — актуальный способ
 	metric := model.Metrics{
 		ID:    "test",
