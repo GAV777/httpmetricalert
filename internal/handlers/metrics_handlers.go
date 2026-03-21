@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"encoding/json"
+	models "github.com/GAV777/httpmetricalert/internal/model"
 	"github.com/GAV777/httpmetricalert/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"html/template"
@@ -141,5 +143,82 @@ func (h *MetricsHandler) ListMetricsHandler(w http.ResponseWriter, r *http.Reque
 	if err := h.Tmpl.Execute(w, metrics); err != nil {
 		log.Printf("Template execution error: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}
+}
+
+// UpdateJSONHandler обрабатывает POST /update в формате JSON
+func (h *MetricsHandler) UpdateJSONHandler(w http.ResponseWriter, r *http.Request) {
+	var metric models.Metrics
+	if err := json.NewDecoder(r.Body).Decode(&metric); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	switch metric.MType {
+	case "gauge":
+		if metric.Value == nil {
+			http.Error(w, "Missing value for gauge", http.StatusBadRequest)
+			return
+		}
+		h.Storage.UpdateGauge(metric.ID, *metric.Value)
+
+	case "counter":
+		if metric.Delta == nil {
+			http.Error(w, "Missing delta for counter", http.StatusBadRequest)
+			return
+		}
+		h.Storage.UpdateCounter(metric.ID, *metric.Delta)
+
+	default:
+		http.Error(w, "Unsupported metric type", http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(metric)
+}
+
+// GetValueJSONHandler обрабатывает POST /value в формате JSON
+func (h *MetricsHandler) GetValueJSONHandler(w http.ResponseWriter, r *http.Request) {
+	var req models.Metrics
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	switch req.MType {
+	case "gauge":
+		value, ok := h.Storage.GetGauge(req.ID)
+		if !ok {
+			http.Error(w, "Metric not found", http.StatusNotFound)
+			return
+		}
+		resp := models.Metrics{
+			ID:    req.ID,
+			MType: "gauge",
+			Value: &value,
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+
+	case "counter":
+		value, ok := h.Storage.GetCounter(req.ID)
+		if !ok {
+			http.Error(w, "Metric not found", http.StatusNotFound)
+			return
+		}
+		resp := models.Metrics{
+			ID:    req.ID,
+			MType: "counter",
+			Delta: &value,
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+
+	default:
+		http.Error(w, "Unsupported metric type", http.StatusBadRequest)
+		return
 	}
 }
