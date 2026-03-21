@@ -111,7 +111,7 @@ func (m *Metrics) Collect() {
 }
 
 func (m *Metrics) ReportWithBaseURL(baseURL string) {
-	client := &http.Client{}
+	client := m.Client
 
 	m.mu.RLock()
 	gauges := make(map[string]float64, len(m.Gauge))
