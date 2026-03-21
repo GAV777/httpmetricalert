@@ -26,7 +26,7 @@ func (h *MetricsHandler) UpdateGauge(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid value", http.StatusBadRequest)
 		return
 	}
-	h.storage.SetGauge(name, value)
+	h.Storage.SetGauge(name, value)
 	w.WriteHeader(http.StatusOK)
 }
 
