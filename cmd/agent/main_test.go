@@ -89,7 +89,6 @@ func TestMetrics_SendMetric_Counter(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &http.Client{}
 	metrics := NewMetrics()
 	metrics.ReportWithBaseURL("http://localhost:8080")
 }
