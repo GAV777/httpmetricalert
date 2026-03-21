@@ -3,12 +3,14 @@ package main
 import (
 	"github.com/GAV777/httpmetricalert/internal/config"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/GAV777/httpmetricalert/internal/handlers"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
 )
 
@@ -16,7 +18,7 @@ func setupRouter(handler *handlers.MetricsHandler) http.Handler {
 	r := chi.NewRouter()
 
 	// Логирование
-	r.Use(hlog.NewHandler(hlog.DefaultLogger))
+	r.Use(hlog.NewHandler(zerolog.New(os.Stdout)))
 	r.Use(hlog.AccessHandler(accessLog))
 	r.Use(hlog.RequestIDHandler("req_id", "Request-Id"))
 

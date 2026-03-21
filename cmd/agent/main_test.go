@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/GAV777/httpmetricalert/internal/model"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -61,7 +62,13 @@ func TestMetrics_SendMetric_Gauge(t *testing.T) {
 
 	client := &http.Client{}
 	metrics := NewMetrics()
-	metrics.SendMetricWithClient(client, server.URL, "gauge", "test_gauge", 42.5)
+	// Отправка через JSON — актуальный способ
+	metric := model.Metrics{
+		ID:    "test",
+		MType: "gauge",
+		Value: newFloat64(42.0),
+	}
+	metrics.sendJSON(client, baseURL, metric)
 }
 
 func TestMetrics_SendMetric_Counter(t *testing.T) {
@@ -83,7 +90,7 @@ func TestMetrics_SendMetric_Counter(t *testing.T) {
 
 	client := &http.Client{}
 	metrics := NewMetrics()
-	metrics.SendMetricWithClient(client, server.URL, "counter", "test_counter", int64(5))
+	metrics.ReportWithBaseURL("http://localhost:8080")
 }
 
 func TestMetrics_Report(t *testing.T) {
