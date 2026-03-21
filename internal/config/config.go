@@ -1,11 +1,8 @@
 package config
 
 import (
-	"compress/gzip"
 	"flag"
-	"github.com/go-chi/chi/v5/middleware"
 	"log"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -58,12 +55,6 @@ func StoreInterval() int      { return storeInterval }
 func FileStoragePath() string { return fileStoragePath }
 func ShouldRestore() bool     { return restore }
 func GzipEnabled() bool       { return gzipEnabled }
-func GzipMiddleware(next http.Handler) http.Handler {
-	if !GzipEnabled() {
-		return next
-	}
-	return middleware.Gzip(gzip.BestSpeed)(next)
-}
 func ParseFlags() {
 	flag.Parse()
 }
