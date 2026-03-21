@@ -18,6 +18,18 @@ type MetricsHandler struct {
 	Tmpl    *template.Template
 }
 
+func (h *MetricsHandler) UpdateGauge(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	valueStr := chi.URLParam(r, "value")
+	value, err := strconv.ParseFloat(valueStr, 64)
+	if err != nil {
+		http.Error(w, "Invalid value", http.StatusBadRequest)
+		return
+	}
+	h.storage.SetGauge(name, value)
+	w.WriteHeader(http.StatusOK)
+}
+
 // NewMetricsHandler создаёт новый обработчик с зависимостями
 func NewMetricsHandler(storage storage.MetricsStorage) *MetricsHandler {
 	tmpl := `

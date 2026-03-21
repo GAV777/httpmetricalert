@@ -15,6 +15,8 @@ func main() {
 	zerolog.TimeFieldFormat = "2006-01-02T15:04:05Z07:00"
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 
+	config.ParseFlags()
+
 	addr := config.GetServerAddress()
 	store := storage.NewMemStorage()
 	handler := handlers.NewMetricsHandler(store)
