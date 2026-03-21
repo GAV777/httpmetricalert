@@ -1,27 +1,31 @@
 package main
 
 import (
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/rs/zerolog"
+	"github.com/GAV777/httpmetricalert/internal/config"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/GAV777/httpmetricalert/internal/handlers"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/rs/zerolog/hlog"
 )
 
 func setupRouter(handler *handlers.MetricsHandler) http.Handler {
 	r := chi.NewRouter()
 
-	// Middleware
-	r.Use(hlog.NewHandler(zerolog.New(os.Stdout)))
+	// Логирование
+	r.Use(hlog.NewHandler(hlog.DefaultLogger))
 	r.Use(hlog.AccessHandler(accessLog))
 	r.Use(hlog.RequestIDHandler("req_id", "Request-Id"))
-	r.Use(noDoubleSlashes)         // Запрещает двойные слэшы
-	r.Use(middleware.StripSlashes) // Удаляет слеши в конце, чтобы /value и /value/ были одинаковыми
+
+	// Защита от //
+	r.Use(noDoubleSlashes)
+	r.Use(middleware.StripSlashes)
+
+	// Подключаем gzip middleware
+	r.Use(config.GzipMiddleware)
 
 	// Маршруты
 	r.Post("/update", handler.UpdateJSONHandler)
@@ -30,7 +34,6 @@ func setupRouter(handler *handlers.MetricsHandler) http.Handler {
 	r.Get("/value/{type}/{name}", handler.GetValueHandler)
 	r.Get("/", handler.ListMetricsHandler)
 
-	// Глобальный 404
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
