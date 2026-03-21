@@ -27,6 +27,7 @@ var (
 	serverAddress  string
 	reportInterval int // в секундах
 	pollInterval   int // в секундах
+	baseURL        string
 )
 
 func init() {
@@ -192,7 +193,7 @@ func main() {
 	if !strings.HasPrefix(serverAddress, "http://") && !strings.HasPrefix(serverAddress, "https://") {
 		serverAddress = "http://" + serverAddress
 	}
-
+	baseURL = serverAddress
 	fmt.Printf("Starting agent with server address: %s\n", serverAddress)
 	fmt.Printf("Report interval: %v, Poll interval: %v\n", reportDuration, pollDuration)
 
