@@ -2,11 +2,11 @@ package main
 
 import (
 	"github.com/GAV777/httpmetricalert/internal/model"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestMetrics_Collect(t *testing.T) {
@@ -44,65 +44,102 @@ func TestMetrics_Collect(t *testing.T) {
 func TestMetrics_SendMetric_Gauge(t *testing.T) {
 	t.Parallel()
 
+	var requestReceived bool
+	var mu sync.Mutex
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestReceived = true
+		mu.Unlock()
+
 		if r.Method != "POST" {
 			t.Errorf("Expected POST request, got %s", r.Method)
 		}
-		if r.Header.Get("Content-Type") != "text/plain" {
-			t.Errorf("Expected Content-Type: text/plain, got %s", r.Header.Get("Content-Type"))
+		if r.URL.Path != "/update" {
+			t.Errorf("Expected URL path /update, got %s", r.URL.Path)
 		}
-		if r.URL.Path == "/update/gauge/test_gauge/42.5" {
-			w.WriteHeader(http.StatusOK)
-		} else {
-			t.Errorf("Unexpected URL path: %s", r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
 	client := &http.Client{}
 	metrics := NewMetrics()
-	metrics.ReportWithBaseURL("http://localhost:8080")
+
 	// Отправка через JSON — актуальный способ
 	metric := model.Metrics{
 		ID:    "test",
 		MType: "gauge",
 		Value: newFloat64(42.0),
 	}
-	metrics.sendJSON(client, baseURL, metric)
+	metrics.sendJSON(client, server.URL, metric)
+
+	// Даём время на отправку
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !requestReceived {
+		t.Error("Expected request to be sent")
+	}
 }
 
 func TestMetrics_SendMetric_Counter(t *testing.T) {
 	t.Parallel()
 
+	var requestReceived bool
+	var mu sync.Mutex
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/update/counter/test_counter/5" {
-			body, _ := io.ReadAll(r.Body)
-			if string(body) != "5" {
-				t.Errorf("Expected body '5', got '%s'", string(body))
-			}
-			w.WriteHeader(http.StatusOK)
-		} else {
-			t.Errorf("Unexpected URL path: %s", r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
+		mu.Lock()
+		requestReceived = true
+		mu.Unlock()
+
+		if r.Method != "POST" {
+			t.Errorf("Expected POST request, got %s", r.Method)
 		}
+		if r.URL.Path != "/update" {
+			t.Errorf("Expected URL path /update, got %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
 	metrics := NewMetrics()
-	metrics.ReportWithBaseURL("http://localhost:8080")
+	metrics.Collect()
+
+	// Отправка counter через JSON
+	metric := model.Metrics{
+		ID:    "test_counter",
+		MType: "counter",
+		Delta: newInt64(5),
+	}
+	metrics.sendJSON(metrics.Client, server.URL, metric)
+
+	// Даём время на отправку
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !requestReceived {
+		t.Error("Expected request to be sent")
+	}
 }
 
 func TestMetrics_Report(t *testing.T) {
 	t.Parallel()
 
-	var reportCalled int
+	var batchCalled int
 	var mu sync.Mutex
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		reportCalled++
+		batchCalled++
 		mu.Unlock()
+
+		// Проверяем, что это пакетный эндпоинт
+		if r.URL.Path != "/updates/" && r.URL.Path != "/updates" {
+			t.Errorf("Expected /updates/ or /updates, got %s", r.URL.Path)
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -111,8 +148,8 @@ func TestMetrics_Report(t *testing.T) {
 	metrics.Collect()
 	metrics.ReportWithBaseURL(server.URL)
 
-	// Ожидаем минимум 28 gauge + 1 counter = 29 запросов
-	if reportCalled < 29 {
-		t.Errorf("Expected at least 29 requests, got %d", reportCalled)
+	// Ожидаем 1 запрос с батчем (вместо 29 отдельных)
+	if batchCalled < 1 {
+		t.Errorf("Expected at least 1 batch request, got %d", batchCalled)
 	}
 }
