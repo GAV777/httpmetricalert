@@ -3,7 +3,6 @@ package config
 import (
 	"flag"
 	"log"
-	"os"
 	"strings"
 )
 
@@ -12,13 +11,6 @@ var serverAddress string
 func init() {
 	addr := getEnvOrDefault("ADDRESS", "localhost:8080")
 	flag.StringVar(&serverAddress, "a", addr, "адрес эндпоинта HTTP-сервера")
-}
-
-func getEnvOrDefault(key, defaultValue string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
-	}
-	return defaultValue
 }
 
 func GetServerAddress() string {

@@ -148,6 +148,9 @@ func (p *PostgresStorage) GetAll() []model.Metrics {
 				})
 			}
 		}
+		if err := rows.Err(); err != nil {
+			log.Printf("❌ Ошибка чтения gauges: %v", err)
+		}
 	}
 
 	// Получаем все counter
@@ -164,6 +167,9 @@ func (p *PostgresStorage) GetAll() []model.Metrics {
 					Delta: &delta,
 				})
 			}
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("❌ Ошибка чтения counters: %v", err)
 		}
 	}
 

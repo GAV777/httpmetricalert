@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"sync"
@@ -11,9 +12,12 @@ import (
 	"github.com/GAV777/httpmetricalert/internal/model"
 )
 
+var ErrDatabaseNotAvailable = errors.New("database is not available")
+
 type MemStorage struct {
-	data map[string]model.Metrics
-	mu   sync.RWMutex
+	data        map[string]model.Metrics
+	mu          sync.RWMutex
+	dbAttempted bool // Попытка подключения к БД была, но не удалась
 }
 
 func NewStorage() MetricsStorage {
@@ -40,7 +44,8 @@ func NewStorage() MetricsStorage {
 // newFileStorage создаёт хранилище с сохранением в файл
 func newFileStorage() *MemStorage {
 	storage := &MemStorage{
-		data: make(map[string]model.Metrics),
+		data:        make(map[string]model.Metrics),
+		dbAttempted: true, // БД была настроена, но подключение не удалось
 	}
 
 	if config.ShouldRestore() {
@@ -239,6 +244,8 @@ func (s *MemStorage) GetAll() []model.Metrics {
 }
 
 func (s *MemStorage) Ping() error {
-	// MemStorage всегда доступен
+	if s.dbAttempted {
+		return ErrDatabaseNotAvailable
+	}
 	return nil
 }
