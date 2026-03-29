@@ -13,6 +13,7 @@ var (
 	fileStoragePath string
 	restore         bool
 	gzipEnabled     bool
+	databaseDSN     string
 )
 
 func init() {
@@ -20,11 +21,13 @@ func init() {
 	path := getEnvOrDefault("FILE_STORAGE_PATH", "/tmp/metrics.json")
 	restoreStr := getEnvOrDefault("RESTORE", "true")
 	gzipStr := getEnvOrDefault("ENABLE_GZIP", "false")
+	dsn := getEnvOrDefault("DATABASE_DSN", "")
 
 	flag.IntVar(&storeInterval, "i", parseInt(interval), "Store interval in seconds (0 for sync)")
 	flag.StringVar(&fileStoragePath, "f", path, "File path to store metrics")
 	flag.BoolVar(&restore, "r", parseBool(restoreStr), "Restore metrics from file on start")
 	flag.BoolVar(&gzipEnabled, "g", parseBool(gzipStr), "Enable GZIP compression for responses")
+	flag.StringVar(&databaseDSN, "d", dsn, "Database DSN (PostgreSQL)")
 }
 
 func parseInt(s string) int {
@@ -55,6 +58,5 @@ func StoreInterval() int      { return storeInterval }
 func FileStoragePath() string { return fileStoragePath }
 func ShouldRestore() bool     { return restore }
 func GzipEnabled() bool       { return gzipEnabled }
-func ParseFlags() {
-	flag.Parse()
-}
+func ParseFlags()             { flag.Parse() }
+func DatabaseDSN() string     { return databaseDSN }

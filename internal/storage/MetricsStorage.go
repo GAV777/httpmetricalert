@@ -9,4 +9,5 @@ type MetricsStorage interface {
 	GetGauge(name string) (float64, bool)
 	GetCounter(name string) (int64, bool)
 	GetAll() []model.Metrics
+	Ping() error
 }

@@ -35,7 +35,7 @@ func setupRouter(handler *handlers.MetricsHandler) http.Handler {
 	r.Post("/update/{type}/{name}/{value}", handler.UpdateHandler)
 	r.Get("/value/{type}/{name}", handler.GetValueHandler)
 	r.Get("/", handler.ListMetricsHandler)
-
+	r.Get("/ping", handler.PingDB)
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})

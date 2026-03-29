@@ -16,6 +16,38 @@ type MemStorage struct {
 	mu   sync.RWMutex
 }
 
+func NewStorage() MetricsStorage {
+	dsn := config.DatabaseDSN()
+	if dsn != "" {
+		storage, err := NewPostgresStorage(dsn)
+		if err != nil {
+			log.Printf("❌ Не удалось подключиться к PostgreSQL: %v", err)
+			log.Println("⚠️ Используем in-memory хранилище")
+		} else {
+			return storage
+		}
+	}
+
+	// Используем in-memory
+	storage := &MemStorage{data: make(map[string]model.Metrics)}
+
+	if config.ShouldRestore() {
+		_ = storage.Load()
+	}
+
+	if config.StoreInterval() > 0 {
+		go func() {
+			ticker := time.NewTicker(time.Duration(config.StoreInterval()) * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				_ = storage.Save()
+			}
+		}()
+	}
+
+	return storage
+}
+
 func NewMemStorage() *MemStorage {
 	storage := &MemStorage{
 		data: make(map[string]model.Metrics),
@@ -165,4 +197,8 @@ func (s *MemStorage) GetAll() []model.Metrics {
 		result = append(result, v)
 	}
 	return result
+}
+
+func (s *MemStorage) Ping() error {
+	return nil
 }
