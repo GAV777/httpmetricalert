@@ -2,7 +2,6 @@ package storage
 
 import (
 	"encoding/json"
-	"errors"
 	"log"
 	"os"
 	"sync"
@@ -12,32 +11,37 @@ import (
 	"github.com/GAV777/httpmetricalert/internal/model"
 )
 
-var ErrDatabaseNotAvailable = errors.New("database is not available")
-
 type MemStorage struct {
-	data         map[string]model.Metrics
-	mu           sync.RWMutex
-	dbConfigured bool // БД была настроена, но подключение не удалось
+	data map[string]model.Metrics
+	mu   sync.RWMutex
 }
 
 func NewStorage() MetricsStorage {
 	dsn := config.DatabaseDSN()
+
+	// Пытаемся подключиться к PostgreSQL, если указан DSN
 	if dsn != "" {
 		storage, err := NewPostgresStorage(dsn)
 		if err != nil {
-			log.Printf(" Не удалось подключиться к PostgreSQL: %v", err)
-			log.Println(" Используем in-memory хранилище")
-			// Возвращаем MemStorage с флагом dbConfigured=true, чтобы Ping() вернул ошибку
-			return &MemStorage{
-				data:         make(map[string]model.Metrics),
-				dbConfigured: true,
-			}
+			log.Printf("❌ Не удалось подключиться к PostgreSQL: %v", err)
+			log.Println("⚠️ Пробуем хранилище в файле")
+			// Пробуем файловое хранилище
+			return newFileStorage()
 		}
+		log.Println("✅ Используем PostgreSQL")
 		return storage
 	}
 
-	// Используем in-memory
-	storage := &MemStorage{data: make(map[string]model.Metrics)}
+	// Если DSN не указан, используем файловое хранилище или память
+	log.Println("⚠️ DATABASE_DSN не указан, используем in-memory хранилище")
+	return newMemStorageOnly()
+}
+
+// newFileStorage создаёт хранилище с сохранением в файл
+func newFileStorage() *MemStorage {
+	storage := &MemStorage{
+		data: make(map[string]model.Metrics),
+	}
 
 	if config.ShouldRestore() {
 		_ = storage.Load()
@@ -52,6 +56,34 @@ func NewStorage() MetricsStorage {
 			}
 		}()
 	}
+
+	return storage
+}
+
+// newMemStorageOnly создаёт хранилище только в памяти
+func newMemStorageOnly() *MemStorage {
+	storage := &MemStorage{
+		data: make(map[string]model.Metrics),
+	}
+
+	if config.ShouldRestore() {
+		storage.Load()
+	}
+
+	if config.StoreInterval() == 0 {
+		// Sync mode — no ticker
+		return storage
+	}
+
+	// Start periodic save
+	go func() {
+		ticker := time.NewTicker(time.Duration(config.StoreInterval()) * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			storage.Save()
+		}
+	}()
 
 	return storage
 }
@@ -137,23 +169,21 @@ func (s *MemStorage) Load() error {
 
 func (s *MemStorage) SetGauge(name string, value float64) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	s.data[name] = model.Metrics{
 		ID:    name,
 		MType: "gauge",
 		Value: &value,
 	}
+	needSave := config.StoreInterval() == 0
+	s.mu.Unlock()
 
-	if config.StoreInterval() == 0 {
+	if needSave {
 		s.Save()
 	}
 }
 
 func (s *MemStorage) SetCounter(name string, delta int64) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	existing, ok := s.data[name]
 	var newValue int64
 	if ok && existing.Delta != nil {
@@ -167,8 +197,10 @@ func (s *MemStorage) SetCounter(name string, delta int64) {
 		MType: "counter",
 		Delta: &newValue,
 	}
+	needSave := config.StoreInterval() == 0
+	s.mu.Unlock()
 
-	if config.StoreInterval() == 0 {
+	if needSave {
 		s.Save()
 	}
 }
@@ -207,8 +239,6 @@ func (s *MemStorage) GetAll() []model.Metrics {
 }
 
 func (s *MemStorage) Ping() error {
-	if s.dbConfigured {
-		return ErrDatabaseNotAvailable
-	}
+	// MemStorage всегда доступен
 	return nil
 }

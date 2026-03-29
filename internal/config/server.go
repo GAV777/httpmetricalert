@@ -22,10 +22,6 @@ func getEnvOrDefault(key, defaultValue string) string {
 }
 
 func GetServerAddress() string {
-	if len(flag.Args()) > 0 {
-		log.Fatalf("неизвестные аргументы командной строки: %v", flag.Args())
-	}
-
 	cleanAddr := strings.TrimPrefix(serverAddress, "http://")
 	cleanAddr = strings.TrimPrefix(cleanAddr, "https://")
 
@@ -35,6 +31,12 @@ func GetServerAddress() string {
 
 	if !strings.Contains(cleanAddr, ":") {
 		log.Fatal("Invalid address format: expected host:port or :port")
+	}
+
+	// Проверяем неизвестные аргументы после парсинга всех флагов
+	remainingArgs := flag.Args()
+	if len(remainingArgs) > 0 {
+		log.Fatalf("неизвестные аргументы командной строки: %v", remainingArgs)
 	}
 
 	return cleanAddr

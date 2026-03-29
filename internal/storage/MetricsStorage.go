@@ -10,4 +10,6 @@ type MetricsStorage interface {
 	GetCounter(name string) (int64, bool)
 	GetAll() []model.Metrics
 	Ping() error
+	Save() error
+	Load() error
 }
