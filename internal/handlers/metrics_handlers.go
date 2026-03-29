@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
-	models "github.com/GAV777/httpmetricalert/internal/model"
+	"github.com/GAV777/httpmetricalert/internal/model"
 	"github.com/GAV777/httpmetricalert/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"html/template"
@@ -160,7 +160,7 @@ func (h *MetricsHandler) ListMetricsHandler(w http.ResponseWriter, r *http.Reque
 
 // UpdateJSONHandler обрабатывает POST /update в формате JSON
 func (h *MetricsHandler) UpdateJSONHandler(w http.ResponseWriter, r *http.Request) {
-	var metric models.Metrics
+	var metric model.Metrics
 	if err := json.NewDecoder(r.Body).Decode(&metric); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
@@ -194,7 +194,7 @@ func (h *MetricsHandler) UpdateJSONHandler(w http.ResponseWriter, r *http.Reques
 
 // GetValueJSONHandler обрабатывает POST /value в формате JSON
 func (h *MetricsHandler) GetValueJSONHandler(w http.ResponseWriter, r *http.Request) {
-	var req models.Metrics
+	var req model.Metrics
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
@@ -209,7 +209,7 @@ func (h *MetricsHandler) GetValueJSONHandler(w http.ResponseWriter, r *http.Requ
 			http.Error(w, "Metric not found", http.StatusNotFound)
 			return
 		}
-		resp := models.Metrics{
+		resp := model.Metrics{
 			ID:    req.ID,
 			MType: "gauge",
 			Value: &value,
@@ -222,7 +222,7 @@ func (h *MetricsHandler) GetValueJSONHandler(w http.ResponseWriter, r *http.Requ
 			http.Error(w, "Metric not found", http.StatusNotFound)
 			return
 		}
-		resp := models.Metrics{
+		resp := model.Metrics{
 			ID:    req.ID,
 			MType: "counter",
 			Delta: &value,
@@ -233,4 +233,47 @@ func (h *MetricsHandler) GetValueJSONHandler(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "Unsupported metric type", http.StatusBadRequest)
 		return
 	}
+}
+
+// UpdateBatchHandler обрабатывает POST /updates/ в формате JSON (список метрик)
+func (h *MetricsHandler) UpdateBatchHandler(w http.ResponseWriter, r *http.Request) {
+	var metrics []model.Metrics
+	if err := json.NewDecoder(r.Body).Decode(&metrics); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if len(metrics) == 0 {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// Проверка корректности метрик перед записью
+	for _, metric := range metrics {
+		switch metric.MType {
+		case model.Gauge:
+			if metric.Value == nil {
+				http.Error(w, "Missing value for gauge: "+metric.ID, http.StatusBadRequest)
+				return
+			}
+		case model.Counter:
+			if metric.Delta == nil {
+				http.Error(w, "Missing delta for counter: "+metric.ID, http.StatusBadRequest)
+				return
+			}
+		default:
+			http.Error(w, "Unsupported metric type: "+metric.MType, http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Используем пакетное обновление
+	if err := h.Storage.UpdateBatch(metrics); err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }

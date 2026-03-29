@@ -33,6 +33,7 @@ func setupRouter(handler *handlers.MetricsHandler) http.Handler {
 	r.Post("/update", handler.UpdateJSONHandler)
 	r.Post("/value", handler.GetValueJSONHandler)
 	r.Post("/update/{type}/{name}/{value}", handler.UpdateHandler)
+	r.Post("/updates", handler.UpdateBatchHandler)
 	r.Get("/value/{type}/{name}", handler.GetValueHandler)
 	r.Get("/", handler.ListMetricsHandler)
 	r.Get("/ping", handler.PingDB)

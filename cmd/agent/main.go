@@ -124,22 +124,30 @@ func (m *Metrics) ReportWithBaseURL(baseURL string) {
 	}
 	m.mu.RUnlock()
 
+	// Формируем батч метрик
+	var batch []model.Metrics
+
 	for name, value := range gauges {
-		metric := model.Metrics{
+		v := value
+		batch = append(batch, model.Metrics{
 			ID:    name,
 			MType: "gauge",
-			Value: &value,
-		}
-		m.sendJSON(client, baseURL, metric)
+			Value: &v,
+		})
 	}
+
 	for name, value := range counters {
-		delta := value
-		metric := model.Metrics{
+		v := value
+		batch = append(batch, model.Metrics{
 			ID:    name,
 			MType: "counter",
-			Delta: &delta,
-		}
-		m.sendJSON(client, baseURL, metric)
+			Delta: &v,
+		})
+	}
+
+	// Отправляем только если есть метрики
+	if len(batch) > 0 {
+		m.sendBatchJSON(client, baseURL, batch)
 	}
 }
 
@@ -183,6 +191,51 @@ func (m *Metrics) sendJSON(client *http.Client, baseURL string, metric model.Met
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		log.Printf("Failed to send metric %s: %d %s", metric.ID, resp.StatusCode, string(body))
+	}
+}
+
+// sendBatchJSON отправляет батч метрик в формате JSON, сжатый gzip
+func (m *Metrics) sendBatchJSON(client *http.Client, baseURL string, batch []model.Metrics) {
+	data, err := json.Marshal(batch)
+	if err != nil {
+		fmt.Printf("Error marshaling batch: %v\n", err)
+		return
+	}
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(data); err != nil {
+		fmt.Printf("Error compressing batch: %v\n", err)
+		return
+	}
+	if err := gz.Close(); err != nil {
+		fmt.Printf("Error closing gzip writer: %v\n", err)
+		return
+	}
+
+	url := fmt.Sprintf("%s/updates/", baseURL)
+	req, err := http.NewRequest("POST", url, &buf)
+	if err != nil {
+		fmt.Printf("Error creating batch request: %v\n", err)
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("Error sending batch: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("Failed to send batch: %d %s", resp.StatusCode, string(body))
+	} else {
+		fmt.Printf("Successfully sent batch with %d metrics\n", len(batch))
 	}
 }
 

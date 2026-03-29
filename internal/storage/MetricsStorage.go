@@ -12,4 +12,5 @@ type MetricsStorage interface {
 	Ping() error
 	Save() error
 	Load() error
+	UpdateBatch(metrics []model.Metrics) error
 }

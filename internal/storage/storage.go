@@ -249,3 +249,48 @@ func (s *MemStorage) Ping() error {
 	}
 	return nil
 }
+
+// UpdateBatch обновляет множество метрик пакетом
+func (s *MemStorage) UpdateBatch(metrics []model.Metrics) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, metric := range metrics {
+		switch metric.MType {
+		case model.Gauge:
+			if metric.Value == nil {
+				continue
+			}
+			s.data[metric.ID] = model.Metrics{
+				ID:    metric.ID,
+				MType: model.Gauge,
+				Value: metric.Value,
+			}
+		case model.Counter:
+			if metric.Delta == nil {
+				continue
+			}
+			existing, ok := s.data[metric.ID]
+			var newValue int64
+			if ok && existing.Delta != nil {
+				newValue = *existing.Delta + *metric.Delta
+			} else {
+				newValue = *metric.Delta
+			}
+			s.data[metric.ID] = model.Metrics{
+				ID:    metric.ID,
+				MType: model.Counter,
+				Delta: &newValue,
+			}
+		}
+	}
+
+	// В синхронном режиме сохраняем после батча
+	if config.StoreInterval() == 0 {
+		s.mu.Unlock()
+		_ = s.Save()
+		s.mu.Lock()
+	}
+
+	return nil
+}

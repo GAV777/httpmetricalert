@@ -216,3 +216,50 @@ func (p *PostgresStorage) Load() error {
 func (p *PostgresStorage) SetContext(ctx context.Context) {
 	// Не используется в текущей реализации
 }
+
+// UpdateBatch обновляет множество метрик в рамках одной транзакции
+func (p *PostgresStorage) UpdateBatch(metrics []model.Metrics) error {
+	if len(metrics) == 0 {
+		return nil
+	}
+
+	tx, err := p.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	gaugeQuery := `
+		INSERT INTO gauges (name, value, updated_at)
+		VALUES ($1, $2, CURRENT_TIMESTAMP)
+		ON CONFLICT (name)
+		DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP
+	`
+	counterQuery := `
+		INSERT INTO counters (name, delta, updated_at)
+		VALUES ($1, $2, CURRENT_TIMESTAMP)
+		ON CONFLICT (name)
+		DO UPDATE SET delta = counters.delta + $2, updated_at = CURRENT_TIMESTAMP
+	`
+
+	for _, metric := range metrics {
+		switch metric.MType {
+		case model.Gauge:
+			if metric.Value == nil {
+				continue
+			}
+			if _, err := tx.Exec(gaugeQuery, metric.ID, *metric.Value); err != nil {
+				return err
+			}
+		case model.Counter:
+			if metric.Delta == nil {
+				continue
+			}
+			if _, err := tx.Exec(counterQuery, metric.ID, *metric.Delta); err != nil {
+				return err
+			}
+		}
+	}
+
+	return tx.Commit()
+}
