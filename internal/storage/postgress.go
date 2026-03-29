@@ -7,7 +7,8 @@ import (
 )
 
 type PostgresStorage struct {
-	db *sql.DB
+	db   *sql.DB
+	used bool
 }
 
 // NewPostgresStorage подключается к PostgreSQL, но не создаёт таблицу
@@ -23,11 +24,14 @@ func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 	}
 
 	log.Println("✅ Подключено к PostgreSQL (без использования таблицы)")
-	return &PostgresStorage{db: db}, nil
+	return &PostgresStorage{db: db, used: true}, nil
 }
 
 // Ping проверяет соединение с БД
 func (p *PostgresStorage) Ping() error {
+	if !p.used {
+		return nil // БД не использовалась → не считаем ошибкой
+	}
 	return p.db.Ping()
 }
 
