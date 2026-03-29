@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"os"
@@ -12,8 +13,9 @@ import (
 )
 
 type MemStorage struct {
-	data map[string]model.Metrics
-	mu   sync.RWMutex
+	data         map[string]model.Metrics
+	mu           sync.RWMutex
+	dbConfigured bool // БД была настроена, но подключение не удалось
 }
 
 func NewStorage() MetricsStorage {
@@ -21,11 +23,15 @@ func NewStorage() MetricsStorage {
 	if dsn != "" {
 		storage, err := NewPostgresStorage(dsn)
 		if err != nil {
-			log.Printf("❌ Не удалось подключиться к PostgreSQL: %v", err)
-			log.Println("⚠️ Используем in-memory хранилище")
-		} else {
-			return storage
+			log.Printf(" Не удалось подключиться к PostgreSQL: %v", err)
+			log.Println(" Используем in-memory хранилище")
+			// Возвращаем MemStorage с флагом dbConfigured=true, чтобы Ping() вернул ошибку
+			return &MemStorage{
+				data:         make(map[string]model.Metrics),
+				dbConfigured: true,
+			}
 		}
+		return storage
 	}
 
 	// Используем in-memory
@@ -127,7 +133,6 @@ func (s *MemStorage) Load() error {
 	return nil
 }
 
-// Sync Save if needed after updates
 func (s *MemStorage) SetGauge(name string, value float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -200,5 +205,8 @@ func (s *MemStorage) GetAll() []model.Metrics {
 }
 
 func (s *MemStorage) Ping() error {
+	if s.dbConfigured {
+		return sql.ErrConnDone // Возвращаем ошибку, если БД была настроена, но подключение не удалось
+	}
 	return nil
 }
