@@ -22,8 +22,6 @@ func getEnvOrDefault(key, defaultValue string) string {
 }
 
 func GetServerAddress() string {
-	flag.Parse()
-
 	if len(flag.Args()) > 0 {
 		log.Fatalf("неизвестные аргументы командной строки: %v", flag.Args())
 	}

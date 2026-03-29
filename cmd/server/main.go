@@ -18,7 +18,7 @@ func main() {
 	config.ParseFlags()
 
 	addr := config.GetServerAddress()
-	store := storage.NewMemStorage()
+	store := storage.NewStorage()
 	handler := handlers.NewMetricsHandler(store)
 
 	router := setupRouter(handler)

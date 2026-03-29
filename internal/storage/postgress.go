@@ -4,11 +4,12 @@ import (
 	"database/sql"
 	"github.com/GAV777/httpmetricalert/internal/model"
 	"log"
+
+	_ "github.com/lib/pq"
 )
 
 type PostgresStorage struct {
-	db   *sql.DB
-	used bool
+	db *sql.DB
 }
 
 // NewPostgresStorage подключается к PostgreSQL, но не создаёт таблицу
@@ -24,14 +25,11 @@ func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 	}
 
 	log.Println("✅ Подключено к PostgreSQL (без использования таблицы)")
-	return &PostgresStorage{db: db, used: true}, nil
+	return &PostgresStorage{db: db}, nil
 }
 
 // Ping проверяет соединение с БД
 func (p *PostgresStorage) Ping() error {
-	if !p.used {
-		return nil // БД не использовалась → не считаем ошибкой
-	}
 	return p.db.Ping()
 }
 
