@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"github.com/GAV777/httpmetricalert/internal/model"
 	"log"
+
+	"github.com/GAV777/httpmetricalert/internal/model"
+	"github.com/GAV777/httpmetricalert/pkg/retry"
+	"github.com/jackc/pgerrcode"
 
 	_ "github.com/lib/pq"
 )
@@ -13,7 +16,8 @@ import (
 var ErrNotFound = errors.New("metric not found")
 
 type PostgresStorage struct {
-	db *sql.DB
+	db       *sql.DB
+	retryCfg retry.Config
 }
 
 // NewPostgresStorage подключается к PostgreSQL и создаёт таблицы
@@ -23,19 +27,27 @@ func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 		return nil, err
 	}
 
-	if err := db.Ping(); err != nil {
+	// Retry the ping with backoff
+	cfg := retry.DefaultConfig()
+	pingErr := retry.Do(context.Background(), cfg, func() error {
+		return db.Ping()
+	})
+	if pingErr != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, pingErr
 	}
 
-	// Создаём таблицы
-	if err := createTables(db); err != nil {
+	// Retry table creation with backoff
+	createErr := retry.Do(context.Background(), cfg, func() error {
+		return createTables(db)
+	})
+	if createErr != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, createErr
 	}
 
 	log.Println("✅ Подключено к PostgreSQL")
-	return &PostgresStorage{db: db}, nil
+	return &PostgresStorage{db: db, retryCfg: cfg}, nil
 }
 
 // createTables создаёт необходимые таблицы в БД
@@ -68,18 +80,23 @@ func createTables(db *sql.DB) error {
 
 // Ping проверяет соединение с БД
 func (p *PostgresStorage) Ping() error {
-	return p.db.Ping()
+	return retry.Do(context.Background(), p.retryCfg, func() error {
+		return p.db.Ping()
+	})
 }
 
 // SetGauge устанавливает значение gauge метрики
 func (p *PostgresStorage) SetGauge(name string, value float64) {
 	query := `
-		INSERT INTO gauges (name, value, updated_at) 
+		INSERT INTO gauges (name, value, updated_at)
 		VALUES ($1, $2, CURRENT_TIMESTAMP)
-		ON CONFLICT (name) 
+		ON CONFLICT (name)
 		DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP
 	`
-	_, err := p.db.Exec(query, name, value)
+	err := retry.Do(context.Background(), p.retryCfg, func() error {
+		_, err := p.db.Exec(query, name, value)
+		return err
+	})
 	if err != nil {
 		log.Printf("❌ Ошибка записи gauge %s: %v", name, err)
 	}
@@ -88,12 +105,15 @@ func (p *PostgresStorage) SetGauge(name string, value float64) {
 // SetCounter устанавливает значение counter метрики (инкремент)
 func (p *PostgresStorage) SetCounter(name string, delta int64) {
 	query := `
-		INSERT INTO counters (name, delta, updated_at) 
+		INSERT INTO counters (name, delta, updated_at)
 		VALUES ($1, $2, CURRENT_TIMESTAMP)
-		ON CONFLICT (name) 
+		ON CONFLICT (name)
 		DO UPDATE SET delta = counters.delta + $2, updated_at = CURRENT_TIMESTAMP
 	`
-	_, err := p.db.Exec(query, name, delta)
+	err := retry.Do(context.Background(), p.retryCfg, func() error {
+		_, err := p.db.Exec(query, name, delta)
+		return err
+	})
 	if err != nil {
 		log.Printf("❌ Ошибка записи counter %s: %v", name, err)
 	}
@@ -103,7 +123,10 @@ func (p *PostgresStorage) SetCounter(name string, delta int64) {
 func (p *PostgresStorage) GetGauge(name string) (float64, bool) {
 	var value float64
 	query := `SELECT value FROM gauges WHERE name = $1`
-	err := p.db.QueryRow(query, name).Scan(&value)
+
+	err := retry.Do(context.Background(), p.retryCfg, func() error {
+		return p.db.QueryRow(query, name).Scan(&value)
+	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, false
@@ -118,7 +141,10 @@ func (p *PostgresStorage) GetGauge(name string) (float64, bool) {
 func (p *PostgresStorage) GetCounter(name string) (int64, bool) {
 	var delta int64
 	query := `SELECT delta FROM counters WHERE name = $1`
-	err := p.db.QueryRow(query, name).Scan(&delta)
+
+	err := retry.Do(context.Background(), p.retryCfg, func() error {
+		return p.db.QueryRow(query, name).Scan(&delta)
+	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, false
@@ -134,13 +160,16 @@ func (p *PostgresStorage) GetAll() []model.Metrics {
 	var metrics []model.Metrics
 
 	// Получаем все gauge
-	rows, err := p.db.Query(`SELECT name, value FROM gauges`)
-	if err == nil {
+	if err := retry.Do(context.Background(), p.retryCfg, func() error {
+		rows, err := p.db.Query(`SELECT name, value FROM gauges`)
+		if err != nil {
+			return err
+		}
 		defer rows.Close()
 		for rows.Next() {
 			var name string
 			var value float64
-			if err := rows.Scan(&name, &value); err == nil {
+			if scanErr := rows.Scan(&name, &value); scanErr == nil {
 				metrics = append(metrics, model.Metrics{
 					ID:    name,
 					MType: model.Gauge,
@@ -148,19 +177,22 @@ func (p *PostgresStorage) GetAll() []model.Metrics {
 				})
 			}
 		}
-		if err := rows.Err(); err != nil {
-			log.Printf("❌ Ошибка чтения gauges: %v", err)
-		}
+		return rows.Err()
+	}); err != nil {
+		log.Printf("❌ Ошибка чтения gauges: %v", err)
 	}
 
 	// Получаем все counter
-	rows, err = p.db.Query(`SELECT name, delta FROM counters`)
-	if err == nil {
+	if err := retry.Do(context.Background(), p.retryCfg, func() error {
+		rows, err := p.db.Query(`SELECT name, delta FROM counters`)
+		if err != nil {
+			return err
+		}
 		defer rows.Close()
 		for rows.Next() {
 			var name string
 			var delta int64
-			if err := rows.Scan(&name, &delta); err == nil {
+			if scanErr := rows.Scan(&name, &delta); scanErr == nil {
 				metrics = append(metrics, model.Metrics{
 					ID:    name,
 					MType: model.Counter,
@@ -168,9 +200,9 @@ func (p *PostgresStorage) GetAll() []model.Metrics {
 				})
 			}
 		}
-		if err := rows.Err(); err != nil {
-			log.Printf("❌ Ошибка чтения counters: %v", err)
-		}
+		return rows.Err()
+	}); err != nil {
+		log.Printf("❌ Ошибка чтения counters: %v", err)
 	}
 
 	return metrics
@@ -184,18 +216,21 @@ func (p *PostgresStorage) Close() error {
 // SetCounterAbs устанавливает абсолютное значение counter (для восстановления из файла)
 func (p *PostgresStorage) SetCounterAbs(name string, delta int64) {
 	query := `
-		INSERT INTO counters (name, delta, updated_at) 
+		INSERT INTO counters (name, delta, updated_at)
 		VALUES ($1, $2, CURRENT_TIMESTAMP)
-		ON CONFLICT (name) 
+		ON CONFLICT (name)
 		DO UPDATE SET delta = $2, updated_at = CURRENT_TIMESTAMP
 	`
-	_, err := p.db.Exec(query, name, delta)
+	err := retry.Do(context.Background(), p.retryCfg, func() error {
+		_, err := p.db.Exec(query, name, delta)
+		return err
+	})
 	if err != nil {
 		log.Printf("❌ Ошибка записи counter %s: %v", name, err)
 	}
 }
 
-// Restore восстанавливает метрики из БД при старте (для совместимости)
+// Restore восстанавливает метрики из БД при старте (для восстановления из файла)
 func (p *PostgresStorage) Restore() error {
 	// В PostgreSQL данные сохраняются постоянно, восстановление не требуется
 	return nil
@@ -223,43 +258,81 @@ func (p *PostgresStorage) UpdateBatch(metrics []model.Metrics) error {
 		return nil
 	}
 
-	tx, err := p.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+	var finalErr error
+	err := retry.Do(context.Background(), p.retryCfg, func() error {
+		tx, err := p.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
 
-	gaugeQuery := `
-		INSERT INTO gauges (name, value, updated_at)
-		VALUES ($1, $2, CURRENT_TIMESTAMP)
-		ON CONFLICT (name)
-		DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP
-	`
-	counterQuery := `
-		INSERT INTO counters (name, delta, updated_at)
-		VALUES ($1, $2, CURRENT_TIMESTAMP)
-		ON CONFLICT (name)
-		DO UPDATE SET delta = counters.delta + $2, updated_at = CURRENT_TIMESTAMP
-	`
+		gaugeQuery := `
+			INSERT INTO gauges (name, value, updated_at)
+			VALUES ($1, $2, CURRENT_TIMESTAMP)
+			ON CONFLICT (name)
+			DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP
+		`
+		counterQuery := `
+			INSERT INTO counters (name, delta, updated_at)
+			VALUES ($1, $2, CURRENT_TIMESTAMP)
+			ON CONFLICT (name)
+			DO UPDATE SET delta = counters.delta + $2, updated_at = CURRENT_TIMESTAMP
+		`
 
-	for _, metric := range metrics {
-		switch metric.MType {
-		case model.Gauge:
-			if metric.Value == nil {
-				continue
+		for _, metric := range metrics {
+			switch metric.MType {
+			case model.Gauge:
+				if metric.Value == nil {
+					continue
+				}
+				if _, err := tx.Exec(gaugeQuery, metric.ID, *metric.Value); err != nil {
+					return err
+				}
+			case model.Counter:
+				if metric.Delta == nil {
+					continue
+				}
+				if _, err := tx.Exec(counterQuery, metric.ID, *metric.Delta); err != nil {
+					return err
+				}
 			}
-			if _, err := tx.Exec(gaugeQuery, metric.ID, *metric.Value); err != nil {
-				return err
-			}
-		case model.Counter:
-			if metric.Delta == nil {
-				continue
-			}
-			if _, err := tx.Exec(counterQuery, metric.ID, *metric.Delta); err != nil {
-				return err
-			}
+		}
+
+		return tx.Commit()
+	})
+	finalErr = err
+
+	// Check for unique violation — these are not retriable
+	if finalErr != nil {
+		// The lib/pq driver wraps error codes in *pq.Error
+		// We check for UniqueViolation specifically to not retry it
+		if isUniqueViolation(finalErr) {
+			log.Printf("⚠️ Unique violation in UpdateBatch: %v", finalErr)
+			return finalErr
 		}
 	}
 
-	return tx.Commit()
+	return finalErr
+}
+
+// isUniqueViolation checks if the error is a PostgreSQL unique constraint violation
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	return containsSubstring(errMsg, pgerrcode.UniqueViolation)
+}
+
+func containsSubstring(s, substr string) bool {
+	return len(s) >= len(substr) && searchSubstring(s, substr)
+}
+
+func searchSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

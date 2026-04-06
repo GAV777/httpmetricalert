@@ -3,10 +3,10 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/GAV777/httpmetricalert/internal/model"
 	"io"
 	"log"
 	"math/rand"
@@ -17,6 +17,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/GAV777/httpmetricalert/internal/model"
+	"github.com/GAV777/httpmetricalert/pkg/retry"
 )
 
 const (
@@ -151,7 +154,7 @@ func (m *Metrics) ReportWithBaseURL(baseURL string) {
 	}
 }
 
-// sendJSON отправляет метрику в формате JSON, сжатую gzip
+// sendJSON отправляет метрику в формате JSON, сжатую gzip, с повторными попытками
 func (m *Metrics) sendJSON(client *http.Client, baseURL string, metric model.Metrics) {
 	data, err := json.Marshal(metric)
 	if err != nil {
@@ -171,30 +174,37 @@ func (m *Metrics) sendJSON(client *http.Client, baseURL string, metric model.Met
 	}
 
 	url := fmt.Sprintf("%s/update", baseURL)
-	req, err := http.NewRequest("POST", url, &buf)
+
+	cfg := retry.DefaultConfig()
+	err = retry.Do(context.Background(), cfg, func() error {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			return err // Non-retriable: request creation failure
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
+		req.Header.Set("Accept-Encoding", "gzip")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return err // Potentially retriable (network error)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("server responded %d: %s", resp.StatusCode, string(body))
+		}
+		return nil
+	})
+
 	if err != nil {
-		fmt.Printf("Error creating request for %s: %v\n", metric.ID, err)
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Content-Encoding", "gzip")
-	req.Header.Set("Accept-Encoding", "gzip")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Printf("Error sending metric %s: %v\n", metric.ID, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		log.Printf("Failed to send metric %s: %d %s", metric.ID, resp.StatusCode, string(body))
+		fmt.Printf("Failed to send metric %s after retries: %v\n", metric.ID, err)
 	}
 }
 
-// sendBatchJSON отправляет батч метрик в формате JSON, сжатый gzip
+// sendBatchJSON отправляет батч метрик в формате JSON, сжатый gzip, с повторными попытками
 func (m *Metrics) sendBatchJSON(client *http.Client, baseURL string, batch []model.Metrics) {
 	data, err := json.Marshal(batch)
 	if err != nil {
@@ -214,26 +224,33 @@ func (m *Metrics) sendBatchJSON(client *http.Client, baseURL string, batch []mod
 	}
 
 	url := fmt.Sprintf("%s/updates/", baseURL)
-	req, err := http.NewRequest("POST", url, &buf)
+
+	cfg := retry.DefaultConfig()
+	err = retry.Do(context.Background(), cfg, func() error {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
+		req.Header.Set("Accept-Encoding", "gzip")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("server responded %d: %s", resp.StatusCode, string(body))
+		}
+		return nil
+	})
+
 	if err != nil {
-		fmt.Printf("Error creating batch request: %v\n", err)
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Content-Encoding", "gzip")
-	req.Header.Set("Accept-Encoding", "gzip")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Printf("Error sending batch: %v\n", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		log.Printf("Failed to send batch: %d %s", resp.StatusCode, string(body))
+		fmt.Printf("Failed to send batch after retries: %v\n", err)
 	} else {
 		fmt.Printf("Successfully sent batch with %d metrics\n", len(batch))
 	}
