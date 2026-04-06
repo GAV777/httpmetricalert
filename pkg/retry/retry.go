@@ -83,12 +83,6 @@ func isRetriable(err error) bool {
 		return true
 	}
 
-	// Temporary network errors
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Temporary() {
-		return true
-	}
-
 	// Generic "connection refused" / "connection reset" messages
 	errMsg := err.Error()
 	if containsAny(errMsg, []string{
