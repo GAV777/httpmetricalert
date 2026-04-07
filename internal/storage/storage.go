@@ -2,7 +2,6 @@ package storage
 
 import (
 	"encoding/json"
-	"errors"
 	"log"
 	"os"
 	"sync"
@@ -11,8 +10,6 @@ import (
 	"github.com/GAV777/httpmetricalert/internal/config"
 	"github.com/GAV777/httpmetricalert/internal/model"
 )
-
-var ErrDatabaseNotAvailable = errors.New("database is not available")
 
 type MemStorage struct {
 	data        map[string]model.Metrics
@@ -244,9 +241,7 @@ func (s *MemStorage) GetAll() []model.Metrics {
 }
 
 func (s *MemStorage) Ping() error {
-	if s.dbAttempted {
-		return ErrDatabaseNotAvailable
-	}
+	// MemStorage всегда доступен, даже если БД недоступна
 	return nil
 }
 
