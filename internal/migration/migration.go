@@ -2,33 +2,23 @@ package migration
 
 import (
 	"database/sql"
+	"embed"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/pressly/goose/v3"
 )
 
+//go:embed *.sql
+var embedMigrations embed.FS
+
 // RunMigrations применяет все миграции к базе данных
-// migrationsDir - путь к директории с SQL файлами миграций
-func RunMigrations(db *sql.DB, migrationsDir string) error {
-	// Resolve absolute path to migrations directory
-	absPath, err := filepath.Abs(migrationsDir)
-	if err != nil {
-		return fmt.Errorf("failed to resolve migrations path: %w", err)
-	}
+func RunMigrations(db *sql.DB) error {
+	// Устанавливаем встроенную файловую систему с миграциями
+	goose.SetBaseFS(embedMigrations)
 
-	// Verify migrations directory exists
-	if _, err := os.Stat(absPath); os.IsNotExist(err) {
-		return fmt.Errorf("migrations directory not found: %s", absPath)
-	}
-
-	if err := goose.SetDialect("postgres"); err != nil {
-		return fmt.Errorf("failed to set goose dialect: %w", err)
-	}
-
-	if err := goose.Up(db, absPath); err != nil {
-		return fmt.Errorf("failed to run migrations: %w", err)
+	// Применяем миграции из embedded файловой системы
+	if err := goose.Up(db, "."); err != nil {
+		return fmt.Errorf("не удалось применить миграции: %w", err)
 	}
 
 	return nil

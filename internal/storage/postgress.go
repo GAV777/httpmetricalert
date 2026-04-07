@@ -22,7 +22,7 @@ type PostgresStorage struct {
 }
 
 // NewPostgresStorage подключается к PostgreSQL и применяет миграции
-func NewPostgresStorage(dsn string, migrationsDir string) (*PostgresStorage, error) {
+func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, err
@@ -40,7 +40,7 @@ func NewPostgresStorage(dsn string, migrationsDir string) (*PostgresStorage, err
 
 	// Apply migrations using goose
 	migErr := retry.Do(context.Background(), cfg, func() error {
-		return migration.RunMigrations(db, migrationsDir)
+		return migration.RunMigrations(db)
 	})
 	if migErr != nil {
 		_ = db.Close()

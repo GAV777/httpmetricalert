@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"sync"
@@ -11,18 +12,20 @@ import (
 	"github.com/GAV777/httpmetricalert/internal/model"
 )
 
+var ErrDatabaseNotAvailable = errors.New("database is not available")
+
 type MemStorage struct {
 	data        map[string]model.Metrics
 	mu          sync.RWMutex
 	dbAttempted bool // Попытка подключения к БД была, но не удалась
 }
 
-func NewStorage(migrationsDir string) MetricsStorage {
+func NewStorage() MetricsStorage {
 	dsn := config.DatabaseDSN()
 
 	// Пытаемся подключиться к PostgreSQL, если указан DSN
 	if dsn != "" {
-		storage, err := NewPostgresStorage(dsn, migrationsDir)
+		storage, err := NewPostgresStorage(dsn)
 		if err != nil {
 			log.Printf("❌ Не удалось подключиться к PostgreSQL: %v", err)
 			log.Println("⚠️ Пробуем хранилище в файле")
@@ -241,7 +244,10 @@ func (s *MemStorage) GetAll() []model.Metrics {
 }
 
 func (s *MemStorage) Ping() error {
-	// MemStorage всегда доступен, даже если БД недоступна
+	// Если БД была настроена, но подключение не удался — возвращаем ошибку
+	if s.dbAttempted {
+		return ErrDatabaseNotAvailable
+	}
 	return nil
 }
 

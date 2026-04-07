@@ -2,21 +2,7 @@
 
 В данной директории содержатся файлы миграций базы данных, управляемые инструментом [goose](https://github.com/pressly/goose).
 
-## Описание
-
-Миграции базы данных — это скрипты, которые позволяют:
-
-- версионировать изменения схемы базы данных
-- применять изменения в правильном порядке
-- откатывать изменения при необходимости
-
-## Структура файлов
-
-Файлы миграций следуют соглашению об именовании goose:
-- `{timestamp}_{name}.up.sql` — миграция для применения (forward)
-- `{timestamp}_{name}.down.sql` — миграция для отката (rollback)
-
-Пример: `20260407120000_init.up.sql`
+SQL-файлы миграций находятся в пакете `internal/migration/` и встроены в бинарный файл через `//go:embed`.
 
 ## Управление миграциями
 
@@ -31,13 +17,13 @@
 go install github.com/pressly/goose/v3/cmd/goose@latest
 
 # Применить все миграции
- goose postgres "postgres://user:password@localhost:5432/dbname" up
+goose postgres "postgres://user:password@localhost:5432/dbname" up -dir internal/migration
 
 # Откатить последнюю миграцию
-goose postgres "postgres://user:password@localhost:5432/dbname" down
+goose postgres "postgres://user:password@localhost:5432/dbname" down -dir internal/migration
 
 # Проверить статус миграций
-goose postgres "postgres://user:password@localhost:5432/dbname" status
+goose postgres "postgres://user:password@localhost:5432/dbname" status -dir internal/migration
 ```
 
 ## Создание новых миграций
@@ -46,18 +32,12 @@ goose postgres "postgres://user:password@localhost:5432/dbname" status
 
 ```bash
 # Создать новую миграцию
-goose create <migration_name> sql -dir migrations/
+goose create -dir internal/migration <migration_name> sql
 
 # Пример:
-goose create add_users_table sql -dir migrations/
+goose create -dir internal/migration add_users_table sql
 ```
 
-Это создаст два файла:
+Это создаст два файла в `internal/migration/`:
 - `{timestamp}_add_users_table.up.sql`
 - `{timestamp}_add_users_table.down.sql`
-
-## Конфигурация
-
-Путь к директории миграций можно настроить через:
-- Переменную окружения: `MIGRATIONS_DIR` (по умолчанию: `migrations`)
-- Флаг командной строки: `-migrations-dir`

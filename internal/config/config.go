@@ -15,7 +15,6 @@ var (
 	restore         bool
 	gzipEnabled     bool
 	databaseDSN     string
-	migrationsDir   string
 )
 
 func init() {
@@ -23,14 +22,12 @@ func init() {
 	path := getEnvOrDefault("FILE_STORAGE_PATH", "/tmp/metrics.json")
 	restoreStr := getEnvOrDefault("RESTORE", "true")
 	gzipStr := getEnvOrDefault("ENABLE_GZIP", "false")
-	migrationsDirStr := getEnvOrDefault("MIGRATIONS_DIR", "migrations")
 
 	flag.IntVar(&storeInterval, "i", parseInt(interval), "Store interval in seconds (0 for sync)")
 	flag.StringVar(&fileStoragePath, "f", path, "File path to store metrics")
 	flag.BoolVar(&restore, "r", parseBool(restoreStr), "Restore metrics from file on start")
 	flag.BoolVar(&gzipEnabled, "g", parseBool(gzipStr), "Enable GZIP compression for responses")
 	flag.StringVar(&databaseDSN, "d", "", "Database DSN (PostgreSQL)")
-	flag.StringVar(&migrationsDir, "migrations-dir", migrationsDirStr, "Path to migrations directory")
 }
 
 func getEnvOrDefault(key, defaultValue string) string {
@@ -76,8 +73,7 @@ func ParseFlags() {
 	}
 	// Если флаг -d установлен явно, используем его значение (даже если пустое)
 }
-func DatabaseDSN() string   { return databaseDSN }
-func MigrationsDir() string { return migrationsDir }
+func DatabaseDSN() string { return databaseDSN }
 
 // isFlagSet проверяет, был ли флаг установлен в командной строке
 func isFlagSet(name string) bool {
