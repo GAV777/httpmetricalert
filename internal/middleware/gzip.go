@@ -1,4 +1,4 @@
-package config
+package middleware
 
 import (
 	"compress/gzip"
@@ -16,10 +16,12 @@ func (w gzipResponseWriter) Write(b []byte) (int, error) {
 	return w.gz.Write(b)
 }
 
-// GzipMiddleware обрабатывает сжатие/распаковку тел запросов и ответов
+// GzipMiddleware handles request/response compression.
+// It compresses responses if the client supports gzip (via Accept-Encoding header)
+// and decompresses request bodies if they are gzip-encoded (via Content-Encoding header).
 func GzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Проверяем, поддерживает ли клиент gzip
+		// Check if client supports gzip
 		supportsGzip := false
 		acceptEncoding := r.Header.Get("Accept-Encoding")
 		for _, v := range strings.Split(acceptEncoding, ",") {
@@ -29,7 +31,7 @@ func GzipMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-		// Если клиент хочет gzip — оборачиваем ResponseWriter
+		// If client wants gzip — wrap ResponseWriter
 		if supportsGzip {
 			gz := gzip.NewWriter(w)
 			defer gz.Close()
@@ -38,7 +40,7 @@ func GzipMiddleware(next http.Handler) http.Handler {
 			w = gzipResponseWriter{ResponseWriter: w, gz: gz}
 		}
 
-		// Если прислано сжатое тело — распаковываем
+		// If request body is gzip-encoded — decompress it
 		if r.Header.Get("Content-Encoding") == "gzip" {
 			gr, err := gzip.NewReader(r.Body)
 			if err != nil {
@@ -46,7 +48,7 @@ func GzipMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			defer gr.Close()
-			r.Body = io.NopCloser(gr) // оборачиваем обратно в ReadCloser
+			r.Body = io.NopCloser(gr)
 		}
 
 		next.ServeHTTP(w, r)

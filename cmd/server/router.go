@@ -1,15 +1,15 @@
 package main
 
 import (
-	"github.com/GAV777/httpmetricalert/internal/config"
+	"github.com/GAV777/httpmetricalert/internal/handlers"
+	"github.com/GAV777/httpmetricalert/internal/middleware"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/GAV777/httpmetricalert/internal/handlers"
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
 )
@@ -24,10 +24,10 @@ func setupRouter(handler *handlers.MetricsHandler) http.Handler {
 
 	// Защита от //
 	r.Use(noDoubleSlashes)
-	r.Use(middleware.StripSlashes)
+	r.Use(chimiddleware.StripSlashes)
 
 	// Подключаем gzip middleware
-	r.Use(config.GzipMiddleware)
+	r.Use(middleware.GzipMiddleware)
 
 	// Маршруты
 	r.Post("/update", handler.UpdateJSONHandler)

@@ -1,7 +1,7 @@
 -- Миграция 001: Создание таблиц для хранения метрик
 
 -- Таблица для метрик типа gauge
-CREATE TABLE IF NOT EXISTS gauges (
+CREATE TABLE gauges (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL UNIQUE,
     value DOUBLE PRECISION NOT NULL,
@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS gauges (
 );
 
 -- Таблица для метрик типа counter
-CREATE TABLE IF NOT EXISTS counters (
+CREATE TABLE counters (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL UNIQUE,
     delta BIGINT NOT NULL DEFAULT 0,
@@ -17,5 +17,5 @@ CREATE TABLE IF NOT EXISTS counters (
 );
 
 -- Индексы для ускорения поиска по имени
-CREATE INDEX IF NOT EXISTS idx_gauges_name ON gauges(name);
-CREATE INDEX IF NOT EXISTS idx_counters_name ON counters(name);
+CREATE INDEX idx_gauges_name ON gauges(name);
+CREATE INDEX idx_counters_name ON counters(name);

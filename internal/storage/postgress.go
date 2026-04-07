@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 
+	"github.com/GAV777/httpmetricalert/internal/migration"
 	"github.com/GAV777/httpmetricalert/internal/model"
 	"github.com/GAV777/httpmetricalert/pkg/retry"
 	"github.com/jackc/pgerrcode"
@@ -20,8 +21,8 @@ type PostgresStorage struct {
 	retryCfg retry.Config
 }
 
-// NewPostgresStorage подключается к PostgreSQL и создаёт таблицы
-func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
+// NewPostgresStorage подключается к PostgreSQL и применяет миграции
+func NewPostgresStorage(dsn string, migrationsDir string) (*PostgresStorage, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, err
@@ -37,45 +38,17 @@ func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 		return nil, pingErr
 	}
 
-	// Retry table creation with backoff
-	createErr := retry.Do(context.Background(), cfg, func() error {
-		return createTables(db)
+	// Apply migrations using goose
+	migErr := retry.Do(context.Background(), cfg, func() error {
+		return migration.RunMigrations(db, migrationsDir)
 	})
-	if createErr != nil {
+	if migErr != nil {
 		_ = db.Close()
-		return nil, createErr
+		return nil, migErr
 	}
 
-	log.Println("✅ Подключено к PostgreSQL")
+	log.Println("✅ Подключено к PostgreSQL, миграции применены")
 	return &PostgresStorage{db: db, retryCfg: cfg}, nil
-}
-
-// createTables создаёт необходимые таблицы в БД
-func createTables(db *sql.DB) error {
-	schema := `
-	-- Таблица для метрик типа gauge
-	CREATE TABLE IF NOT EXISTS gauges (
-		id SERIAL PRIMARY KEY,
-		name VARCHAR(255) NOT NULL UNIQUE,
-		value DOUBLE PRECISION NOT NULL,
-		updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-	);
-
-	-- Таблица для метрик типа counter
-	CREATE TABLE IF NOT EXISTS counters (
-		id SERIAL PRIMARY KEY,
-		name VARCHAR(255) NOT NULL UNIQUE,
-		delta BIGINT NOT NULL DEFAULT 0,
-		updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-	);
-
-	-- Индексы для ускорения поиска по имени
-	CREATE INDEX IF NOT EXISTS idx_gauges_name ON gauges(name);
-	CREATE INDEX IF NOT EXISTS idx_counters_name ON counters(name);
-	`
-
-	_, err := db.Exec(schema)
-	return err
 }
 
 // Ping проверяет соединение с БД

@@ -20,12 +20,12 @@ type MemStorage struct {
 	dbAttempted bool // Попытка подключения к БД была, но не удалась
 }
 
-func NewStorage() MetricsStorage {
+func NewStorage(migrationsDir string) MetricsStorage {
 	dsn := config.DatabaseDSN()
 
 	// Пытаемся подключиться к PostgreSQL, если указан DSN
 	if dsn != "" {
-		storage, err := NewPostgresStorage(dsn)
+		storage, err := NewPostgresStorage(dsn, migrationsDir)
 		if err != nil {
 			log.Printf("❌ Не удалось подключиться к PostgreSQL: %v", err)
 			log.Println("⚠️ Пробуем хранилище в файле")
