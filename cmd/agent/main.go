@@ -1,14 +1,25 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/GAV777/httpmetricalert/internal/model"
+	"github.com/GAV777/httpmetricalert/pkg/retry"
 )
 
 const (
@@ -19,29 +30,50 @@ var (
 	serverAddress  string
 	reportInterval int // в секундах
 	pollInterval   int // в секундах
+	baseURL        string
 )
 
 func init() {
-	flag.StringVar(&serverAddress, "a", "localhost:8080", "HTTP server address (default: localhost:8080)")
-	flag.IntVar(&reportInterval, "r", 10, "Report interval in seconds (default: 10)")
-	flag.IntVar(&pollInterval, "p", 2, "Poll interval in seconds (default: 2)")
+	addr := getEnvOrDefault("ADDRESS", "localhost:8080")
+	reportStr := getEnvOrDefault("REPORT_INTERVAL", "10")
+	pollStr := getEnvOrDefault("POLL_INTERVAL", "2")
+
+	flag.StringVar(&serverAddress, "a", addr, "HTTP server address")
+	flag.IntVar(&reportInterval, "r", parseIntOrPanic(reportStr, "REPORT_INTERVAL"), "Report interval in seconds")
+	flag.IntVar(&pollInterval, "p", parseIntOrPanic(pollStr, "POLL_INTERVAL"), "Poll interval in seconds")
 }
 
-// Metrics хранит метрики с мьютексом для потокобезопасности
+func getEnvOrDefault(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return defaultValue
+}
+
+func parseIntOrPanic(s, context string) int {
+	if n, err := strconv.Atoi(s); err == nil {
+		return n
+	} else {
+		log.Fatalf("Invalid value for %s: %s (must be integer)", context, s)
+		panic("unreachable")
+	}
+}
+
 type Metrics struct {
 	Gauge   map[string]float64
 	Counter map[string]int64
-	mu      sync.RWMutex // защита чтения/записи
+	Client  *http.Client
+	mu      sync.RWMutex
 }
 
 func NewMetrics() *Metrics {
 	return &Metrics{
 		Gauge:   make(map[string]float64),
 		Counter: make(map[string]int64),
+		Client:  &http.Client{},
 	}
 }
 
-// Collect собирает метрики из runtime — требует блокировки на запись
 func (m *Metrics) Collect() {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
@@ -81,42 +113,8 @@ func (m *Metrics) Collect() {
 	m.Counter["PollCount"]++
 }
 
-// SendMetricWithClient отправляет одну метрику на указанный baseURL
-func (m *Metrics) SendMetricWithClient(client *http.Client, baseURL, metricType, name string, value interface{}) {
-	var valueStr string
-	switch v := value.(type) {
-	case int64:
-		valueStr = fmt.Sprintf("%d", v)
-	case float64:
-		valueStr = fmt.Sprintf("%g", v)
-	default:
-		return
-	}
-
-	url := fmt.Sprintf("%s/update/%s/%s/%s", baseURL, metricType, name, valueStr)
-
-	req, err := http.NewRequest("POST", url, strings.NewReader(valueStr))
-	if err != nil {
-		fmt.Printf("Error creating request for %s: %v\n", name, err)
-		return
-	}
-	req.Header.Set("Content-Type", contentType)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Printf("Error sending metric %s: %v\n", name, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("Error response for %s: %s\n", name, resp.Status)
-	}
-}
-
-// ReportWithBaseURL отправляет все метрики на указанный сервер
 func (m *Metrics) ReportWithBaseURL(baseURL string) {
-	client := &http.Client{}
+	client := m.Client
 
 	m.mu.RLock()
 	gauges := make(map[string]float64, len(m.Gauge))
@@ -129,11 +127,132 @@ func (m *Metrics) ReportWithBaseURL(baseURL string) {
 	}
 	m.mu.RUnlock()
 
+	// Формируем батч метрик
+	var batch []model.Metrics
+
 	for name, value := range gauges {
-		m.SendMetricWithClient(client, baseURL, "gauge", name, value)
+		v := value
+		batch = append(batch, model.Metrics{
+			ID:    name,
+			MType: "gauge",
+			Value: &v,
+		})
 	}
+
 	for name, value := range counters {
-		m.SendMetricWithClient(client, baseURL, "counter", name, value)
+		v := value
+		batch = append(batch, model.Metrics{
+			ID:    name,
+			MType: "counter",
+			Delta: &v,
+		})
+	}
+
+	// Отправляем только если есть метрики
+	if len(batch) > 0 {
+		m.sendBatchJSON(client, baseURL, batch)
+	}
+}
+
+// sendJSON отправляет метрику в формате JSON, сжатую gzip, с повторными попытками
+func (m *Metrics) sendJSON(client *http.Client, baseURL string, metric model.Metrics) {
+	data, err := json.Marshal(metric)
+	if err != nil {
+		fmt.Printf("Error marshaling metric %s: %v\n", metric.ID, err)
+		return
+	}
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(data); err != nil {
+		fmt.Printf("Error compressing data for %s: %v\n", metric.ID, err)
+		return
+	}
+	if err := gz.Close(); err != nil {
+		fmt.Printf("Error closing gzip writer for %s: %v\n", metric.ID, err)
+		return
+	}
+
+	url := fmt.Sprintf("%s/update", baseURL)
+
+	cfg := retry.DefaultConfig()
+	err = retry.Do(context.Background(), cfg, func() error {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			return err // Non-retriable: request creation failure
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
+		req.Header.Set("Accept-Encoding", "gzip")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return err // Potentially retriable (network error)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("server responded %d: %s", resp.StatusCode, string(body))
+		}
+		return nil
+	})
+
+	if err != nil {
+		fmt.Printf("Failed to send metric %s after retries: %v\n", metric.ID, err)
+	}
+}
+
+// sendBatchJSON отправляет батч метрик в формате JSON, сжатый gzip, с повторными попытками
+func (m *Metrics) sendBatchJSON(client *http.Client, baseURL string, batch []model.Metrics) {
+	data, err := json.Marshal(batch)
+	if err != nil {
+		fmt.Printf("Error marshaling batch: %v\n", err)
+		return
+	}
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(data); err != nil {
+		fmt.Printf("Error compressing batch: %v\n", err)
+		return
+	}
+	if err := gz.Close(); err != nil {
+		fmt.Printf("Error closing gzip writer: %v\n", err)
+		return
+	}
+
+	url := fmt.Sprintf("%s/updates/", baseURL)
+
+	cfg := retry.DefaultConfig()
+	err = retry.Do(context.Background(), cfg, func() error {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
+		req.Header.Set("Accept-Encoding", "gzip")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("server responded %d: %s", resp.StatusCode, string(body))
+		}
+		return nil
+	})
+
+	if err != nil {
+		fmt.Printf("Failed to send batch after retries: %v\n", err)
+	} else {
+		fmt.Printf("Successfully sent batch with %d metrics\n", len(batch))
 	}
 }
 
@@ -146,7 +265,7 @@ func main() {
 	if !strings.HasPrefix(serverAddress, "http://") && !strings.HasPrefix(serverAddress, "https://") {
 		serverAddress = "http://" + serverAddress
 	}
-
+	baseURL = serverAddress
 	fmt.Printf("Starting agent with server address: %s\n", serverAddress)
 	fmt.Printf("Report interval: %v, Poll interval: %v\n", reportDuration, pollDuration)
 
@@ -169,4 +288,11 @@ func main() {
 			metrics.ReportWithBaseURL(serverAddress)
 		}
 	}
+}
+func newFloat64(v float64) *float64 {
+	return &v
+}
+
+func newInt64(v int64) *int64 {
+	return &v
 }
