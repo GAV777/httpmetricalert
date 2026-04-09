@@ -3,9 +3,12 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,16 +25,40 @@ var (
 )
 
 func init() {
-	flag.StringVar(&serverAddress, "a", "localhost:8080", "HTTP server address (default: localhost:8080)")
-	flag.IntVar(&reportInterval, "r", 10, "Report interval in seconds (default: 10)")
-	flag.IntVar(&pollInterval, "p", 2, "Poll interval in seconds (default: 2)")
+	// Читаем переменные окружения
+	addr := getEnvOrDefault("ADDRESS", "localhost:8080")
+	reportStr := getEnvOrDefault("REPORT_INTERVAL", "10")
+	pollStr := getEnvOrDefault("POLL_INTERVAL", "2")
+
+	// Определяем флаги
+	flag.StringVar(&serverAddress, "a", addr, "HTTP server address")
+	flag.IntVar(&reportInterval, "r", parseIntOrPanic(reportStr, "REPORT_INTERVAL"), "Report interval in seconds")
+	flag.IntVar(&pollInterval, "p", parseIntOrPanic(pollStr, "POLL_INTERVAL"), "Poll interval in seconds")
+}
+
+// getEnvOrDefault возвращает значение переменной окружения или значение по умолчанию
+func getEnvOrDefault(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return defaultValue
+}
+
+// parseIntOrPanic парсит строку в int, паникует при ошибке (только для инициализации)
+func parseIntOrPanic(s, context string) int {
+	if n, err := strconv.Atoi(s); err == nil {
+		return n
+	} else {
+		log.Fatalf("Invalid value for %s: %s (must be integer)", context, s)
+		panic("unreachable")
+	}
 }
 
 // Metrics хранит метрики с мьютексом для потокобезопасности
 type Metrics struct {
 	Gauge   map[string]float64
 	Counter map[string]int64
-	mu      sync.RWMutex // защита чтения/записи
+	mu      sync.RWMutex
 }
 
 func NewMetrics() *Metrics {
