@@ -21,18 +21,16 @@ import (
 	"github.com/GAV777/httpmetricalert/internal/model"
 	"github.com/GAV777/httpmetricalert/pkg/hash"
 	"github.com/GAV777/httpmetricalert/pkg/retry"
-)
-
-const (
-	contentType = "text/plain"
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/mem"
 )
 
 var (
 	serverAddress  string
 	reportInterval int // в секундах
 	pollInterval   int // в секундах
-	baseURL        string
 	secretKey      string
+	rateLimit      int // максимальное кол-во одновременных запросов
 )
 
 func init() {
@@ -40,11 +38,13 @@ func init() {
 	reportStr := getEnvOrDefault("REPORT_INTERVAL", "10")
 	pollStr := getEnvOrDefault("POLL_INTERVAL", "2")
 	key := getEnvOrDefault("KEY", "")
+	rateLimitStr := getEnvOrDefault("RATE_LIMIT", "1")
 
 	flag.StringVar(&serverAddress, "a", addr, "HTTP server address")
 	flag.IntVar(&reportInterval, "r", parseIntOrPanic(reportStr, "REPORT_INTERVAL"), "Report interval in seconds")
 	flag.IntVar(&pollInterval, "p", parseIntOrPanic(pollStr, "POLL_INTERVAL"), "Poll interval in seconds")
 	flag.StringVar(&secretKey, "k", key, "Secret key for SHA256 hashing")
+	flag.IntVar(&rateLimit, "l", parseIntOrPanic(rateLimitStr, "RATE_LIMIT"), "Max concurrent requests")
 }
 
 func getEnvOrDefault(key, defaultValue string) string {
@@ -56,141 +56,172 @@ func getEnvOrDefault(key, defaultValue string) string {
 
 func parseIntOrPanic(s, context string) int {
 	if n, err := strconv.Atoi(s); err == nil {
+		if n <= 0 {
+			log.Fatalf("%s must be positive, got %d", context, n)
+		}
 		return n
-	} else {
-		log.Fatalf("Invalid value for %s: %s (must be integer)", context, s)
-		panic("unreachable")
+	}
+	log.Fatalf("Invalid value for %s: %s (must be integer)", context, s)
+	panic("unreachable")
+}
+
+// MetricsStore — потокобезопасное хранилище метрик
+type MetricsStore struct {
+	gauges   map[string]float64
+	counters map[string]int64
+	mu       sync.RWMutex
+}
+
+func NewMetricsStore() *MetricsStore {
+	return &MetricsStore{
+		gauges:   make(map[string]float64),
+		counters: make(map[string]int64),
 	}
 }
 
-type Metrics struct {
-	Gauge   map[string]float64
-	Counter map[string]int64
-	Client  *http.Client
-	mu      sync.RWMutex
+func (s *MetricsStore) SetGauge(name string, value float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gauges[name] = value
 }
 
-func NewMetrics() *Metrics {
-	return &Metrics{
-		Gauge:   make(map[string]float64),
-		Counter: make(map[string]int64),
-		Client:  &http.Client{},
-	}
+func (s *MetricsStore) IncrCounter(name string, value int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.counters[name] += value
 }
 
-func (m *Metrics) Collect() {
-	var memStats runtime.MemStats
-	runtime.ReadMemStats(&memStats)
+func (s *MetricsStore) Snapshot() ([]model.Metrics, []model.Metrics) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.Gauge["Alloc"] = float64(memStats.Alloc)
-	m.Gauge["BuckHashSys"] = float64(memStats.BuckHashSys)
-	m.Gauge["Frees"] = float64(memStats.Frees)
-	m.Gauge["GCCPUFraction"] = memStats.GCCPUFraction
-	m.Gauge["GCSys"] = float64(memStats.GCSys)
-	m.Gauge["HeapAlloc"] = float64(memStats.HeapAlloc)
-	m.Gauge["HeapIdle"] = float64(memStats.HeapIdle)
-	m.Gauge["HeapInuse"] = float64(memStats.HeapInuse)
-	m.Gauge["HeapObjects"] = float64(memStats.HeapObjects)
-	m.Gauge["HeapReleased"] = float64(memStats.HeapReleased)
-	m.Gauge["HeapSys"] = float64(memStats.HeapSys)
-	m.Gauge["LastGC"] = float64(memStats.LastGC)
-	m.Gauge["Lookups"] = float64(memStats.Lookups)
-	m.Gauge["MCacheInuse"] = float64(memStats.MCacheInuse)
-	m.Gauge["MCacheSys"] = float64(memStats.MCacheSys)
-	m.Gauge["MSpanInuse"] = float64(memStats.MSpanInuse)
-	m.Gauge["MSpanSys"] = float64(memStats.MSpanSys)
-	m.Gauge["Mallocs"] = float64(memStats.Mallocs)
-	m.Gauge["NextGC"] = float64(memStats.NextGC)
-	m.Gauge["NumForcedGC"] = float64(memStats.NumForcedGC)
-	m.Gauge["NumGC"] = float64(memStats.NumGC)
-	m.Gauge["OtherSys"] = float64(memStats.OtherSys)
-	m.Gauge["PauseTotalNs"] = float64(memStats.PauseTotalNs)
-	m.Gauge["StackInuse"] = float64(memStats.StackInuse)
-	m.Gauge["StackSys"] = float64(memStats.StackSys)
-	m.Gauge["Sys"] = float64(memStats.Sys)
-	m.Gauge["TotalAlloc"] = float64(memStats.TotalAlloc)
-
-	m.Gauge["RandomValue"] = rand.Float64()
-	m.Counter["PollCount"]++
-}
-
-func (m *Metrics) ReportWithBaseURL(baseURL string) {
-	client := m.Client
-
-	m.mu.RLock()
-	gauges := make(map[string]float64, len(m.Gauge))
-	for k, v := range m.Gauge {
-		gauges[k] = v
-	}
-	counters := make(map[string]int64, len(m.Counter))
-	for k, v := range m.Counter {
-		counters[k] = v
-	}
-	m.mu.RUnlock()
-
-	// Формируем батч метрик
-	var batch []model.Metrics
-
-	for name, value := range gauges {
+	var gauges []model.Metrics
+	for name, value := range s.gauges {
 		v := value
-		batch = append(batch, model.Metrics{
+		gauges = append(gauges, model.Metrics{
 			ID:    name,
 			MType: "gauge",
 			Value: &v,
 		})
 	}
 
-	for name, value := range counters {
+	var counters []model.Metrics
+	for name, value := range s.counters {
 		v := value
-		batch = append(batch, model.Metrics{
+		counters = append(counters, model.Metrics{
 			ID:    name,
 			MType: "counter",
 			Delta: &v,
 		})
 	}
 
-	// Отправляем только если есть метрики
-	if len(batch) > 0 {
-		m.sendBatchJSON(client, baseURL, batch)
+	return gauges, counters
+}
+
+// runtimeCollector собирает метрики runtime
+func runtimeCollector(store *MetricsStore, interval time.Duration, stopCh <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+
+			store.SetGauge("Alloc", float64(m.Alloc))
+			store.SetGauge("BuckHashSys", float64(m.BuckHashSys))
+			store.SetGauge("Frees", float64(m.Frees))
+			store.SetGauge("GCCPUFraction", m.GCCPUFraction)
+			store.SetGauge("GCSys", float64(m.GCSys))
+			store.SetGauge("HeapAlloc", float64(m.HeapAlloc))
+			store.SetGauge("HeapIdle", float64(m.HeapIdle))
+			store.SetGauge("HeapInuse", float64(m.HeapInuse))
+			store.SetGauge("HeapObjects", float64(m.HeapObjects))
+			store.SetGauge("HeapReleased", float64(m.HeapReleased))
+			store.SetGauge("HeapSys", float64(m.HeapSys))
+			store.SetGauge("LastGC", float64(m.LastGC))
+			store.SetGauge("Lookups", float64(m.Lookups))
+			store.SetGauge("MCacheInuse", float64(m.MCacheInuse))
+			store.SetGauge("MCacheSys", float64(m.MCacheSys))
+			store.SetGauge("MSpanInuse", float64(m.MSpanInuse))
+			store.SetGauge("MSpanSys", float64(m.MSpanSys))
+			store.SetGauge("Mallocs", float64(m.Mallocs))
+			store.SetGauge("NextGC", float64(m.NextGC))
+			store.SetGauge("NumForcedGC", float64(m.NumForcedGC))
+			store.SetGauge("NumGC", float64(m.NumGC))
+			store.SetGauge("OtherSys", float64(m.OtherSys))
+			store.SetGauge("PauseTotalNs", float64(m.PauseTotalNs))
+			store.SetGauge("StackInuse", float64(m.StackInuse))
+			store.SetGauge("StackSys", float64(m.StackSys))
+			store.SetGauge("Sys", float64(m.Sys))
+			store.SetGauge("TotalAlloc", float64(m.TotalAlloc))
+
+			store.SetGauge("RandomValue", rand.Float64())
+			store.IncrCounter("PollCount", 1)
+		}
 	}
 }
 
-// sendJSON отправляет метрику в формате JSON, сжатую gzip, с повторными попытками
-func (m *Metrics) sendJSON(client *http.Client, baseURL string, metric model.Metrics) {
+// gopsutilCollector собирает системные метрики
+func gopsutilCollector(store *MetricsStore, interval time.Duration, stopCh <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+			// Память
+			v, err := mem.VirtualMemory()
+			if err == nil {
+				store.SetGauge("TotalMemory", float64(v.Total))
+				store.SetGauge("FreeMemory", float64(v.Free))
+			}
+
+			// CPU utilization по ядрам
+			percentages, err := cpu.Percent(0, true)
+			if err == nil {
+				for i, p := range percentages {
+					name := fmt.Sprintf("CPUutilization%d", i+1)
+					store.SetGauge(name, p)
+				}
+			}
+		}
+	}
+}
+
+// worker — отправляет одну метрику
+func sendMetric(client *http.Client, baseURL string, metric model.Metrics) error {
 	data, err := json.Marshal(metric)
 	if err != nil {
-		fmt.Printf("Error marshaling metric %s: %v\n", metric.ID, err)
-		return
+		return fmt.Errorf("marshal metric %s: %w", metric.ID, err)
 	}
 
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	if _, err := gz.Write(data); err != nil {
-		fmt.Printf("Error compressing data for %s: %v\n", metric.ID, err)
-		return
+		gz.Close()
+		return fmt.Errorf("compress metric %s: %w", metric.ID, err)
 	}
-	if err := gz.Close(); err != nil {
-		fmt.Printf("Error closing gzip writer for %s: %v\n", metric.ID, err)
-		return
-	}
+	gz.Close()
 
 	url := fmt.Sprintf("%s/update", baseURL)
 
 	cfg := retry.DefaultConfig()
-	err = retry.Do(context.Background(), cfg, func() error {
+	return retry.Do(context.Background(), cfg, func() error {
 		req, err := http.NewRequest("POST", url, bytes.NewReader(buf.Bytes()))
 		if err != nil {
-			return err // Non-retriable: request creation failure
+			return err
 		}
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Content-Encoding", "gzip")
 		req.Header.Set("Accept-Encoding", "gzip")
 
-		// Вычисляем хеш от несжатого тела (сервер проверяет после распаковки)
 		if secretKey != "" {
 			h := hash.Sign(string(data), secretKey)
 			req.Header.Set("HashSHA256", h)
@@ -198,45 +229,41 @@ func (m *Metrics) sendJSON(client *http.Client, baseURL string, metric model.Met
 
 		resp, err := client.Do(req)
 		if err != nil {
-			return err // Potentially retriable (network error)
+			return err
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("server responded %d: %s", resp.StatusCode, string(body))
+			return fmt.Errorf("server %d: %s", resp.StatusCode, string(body))
 		}
 		return nil
 	})
-
-	if err != nil {
-		fmt.Printf("Failed to send metric %s after retries: %v\n", metric.ID, err)
-	}
 }
 
-// sendBatchJSON отправляет батч метрик в формате JSON, сжатый gzip, с повторными попытками
-func (m *Metrics) sendBatchJSON(client *http.Client, baseURL string, batch []model.Metrics) {
+// sendBatch отправляет батч метрик
+func sendBatch(client *http.Client, baseURL string, batch []model.Metrics) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
 	data, err := json.Marshal(batch)
 	if err != nil {
-		fmt.Printf("Error marshaling batch: %v\n", err)
-		return
+		return fmt.Errorf("marshal batch: %w", err)
 	}
 
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	if _, err := gz.Write(data); err != nil {
-		fmt.Printf("Error compressing batch: %v\n", err)
-		return
+		gz.Close()
+		return fmt.Errorf("compress batch: %w", err)
 	}
-	if err := gz.Close(); err != nil {
-		fmt.Printf("Error closing gzip writer: %v\n", err)
-		return
-	}
+	gz.Close()
 
 	url := fmt.Sprintf("%s/updates/", baseURL)
 
 	cfg := retry.DefaultConfig()
-	err = retry.Do(context.Background(), cfg, func() error {
+	return retry.Do(context.Background(), cfg, func() error {
 		req, err := http.NewRequest("POST", url, bytes.NewReader(buf.Bytes()))
 		if err != nil {
 			return err
@@ -246,7 +273,6 @@ func (m *Metrics) sendBatchJSON(client *http.Client, baseURL string, batch []mod
 		req.Header.Set("Content-Encoding", "gzip")
 		req.Header.Set("Accept-Encoding", "gzip")
 
-		// Вычисляем хеш от несжатого тела (сервер проверяет после распаковки)
 		if secretKey != "" {
 			h := hash.Sign(string(data), secretKey)
 			req.Header.Set("HashSHA256", h)
@@ -260,15 +286,86 @@ func (m *Metrics) sendBatchJSON(client *http.Client, baseURL string, batch []mod
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("server responded %d: %s", resp.StatusCode, string(body))
+			return fmt.Errorf("server %d: %s", resp.StatusCode, string(body))
 		}
 		return nil
 	})
+}
 
-	if err != nil {
-		fmt.Printf("Failed to send batch after retries: %v\n", err)
-	} else {
-		fmt.Printf("Successfully sent batch with %d metrics\n", len(batch))
+// workerPool — пул воркеров для отправки метрик
+type workerPool struct {
+	tasks   chan func()
+	client  *http.Client
+	baseURL string
+	wg      sync.WaitGroup
+	stopCh  chan struct{}
+}
+
+func newWorkerPool(size int, client *http.Client, baseURL string) *workerPool {
+	return &workerPool{
+		tasks:   make(chan func(), size*2),
+		client:  client,
+		baseURL: baseURL,
+		stopCh:  make(chan struct{}),
+	}
+}
+
+func (wp *workerPool) Start() {
+	for i := 0; i < rateLimit; i++ {
+		wp.wg.Add(1)
+		go func() {
+			defer wp.wg.Done()
+			for {
+				select {
+				case task := <-wp.tasks:
+					task()
+				case <-wp.stopCh:
+					return
+				}
+			}
+		}()
+	}
+}
+
+func (wp *workerPool) Submit(task func()) {
+	wp.tasks <- task
+}
+
+func (wp *workerPool) Stop() {
+	close(wp.stopCh)
+	wp.wg.Wait()
+}
+
+// sender — отправляет метрики каждые reportInterval
+func sender(store *MetricsStore, wp *workerPool, interval time.Duration, stopCh <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+			gauges, counters := store.Snapshot()
+
+			// Отправляем батч
+			var batch []model.Metrics
+			batch = append(batch, gauges...)
+			batch = append(batch, counters...)
+
+			if len(batch) == 0 {
+				continue
+			}
+
+			fmt.Printf("Sending batch with %d metrics\n", len(batch))
+			wp.Submit(func() {
+				if err := sendBatch(wp.client, wp.baseURL, batch); err != nil {
+					fmt.Printf("Failed to send batch: %v\n", err)
+				} else {
+					fmt.Printf("Successfully sent batch with %d metrics\n", len(batch))
+				}
+			})
+		}
 	}
 }
 
@@ -281,34 +378,27 @@ func main() {
 	if !strings.HasPrefix(serverAddress, "http://") && !strings.HasPrefix(serverAddress, "https://") {
 		serverAddress = "http://" + serverAddress
 	}
-	baseURL = serverAddress
+
 	fmt.Printf("Starting agent with server address: %s\n", serverAddress)
-	fmt.Printf("Report interval: %v, Poll interval: %v\n", reportDuration, pollDuration)
+	fmt.Printf("Report interval: %v, Poll interval: %v, Rate limit: %d\n", reportDuration, pollDuration, rateLimit)
 
-	metrics := NewMetrics()
-	tickerPoll := time.NewTicker(pollDuration)
-	tickerReport := time.NewTicker(reportDuration)
-	defer tickerPoll.Stop()
-	defer tickerReport.Stop()
+	store := NewMetricsStore()
+	client := &http.Client{}
 
-	metrics.Collect()
-	fmt.Println("Initial metrics collected")
+	// Запускаем worker pool
+	wp := newWorkerPool(rateLimit, client, serverAddress)
+	wp.Start()
 
-	for {
-		select {
-		case <-tickerPoll.C:
-			metrics.Collect()
-			fmt.Println("Metrics collected")
-		case <-tickerReport.C:
-			fmt.Println("Sending metrics to server...")
-			metrics.ReportWithBaseURL(serverAddress)
-		}
-	}
-}
-func newFloat64(v float64) *float64 {
-	return &v
-}
+	// Каналы остановки
+	stopCollect := make(chan struct{})
 
-func newInt64(v int64) *int64 {
-	return &v
+	// Запускаем сборщики метрик в отдельных горутинах
+	go runtimeCollector(store, pollDuration, stopCollect)
+	go gopsutilCollector(store, pollDuration, stopCollect)
+
+	// Запускаем отправителя
+	go sender(store, wp, reportDuration, stopCollect)
+
+	// Работаем бесконечно (остановка по сигналу SIGINT/SIGTERM)
+	<-make(chan struct{})
 }

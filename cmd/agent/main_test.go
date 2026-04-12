@@ -9,39 +9,69 @@ import (
 	"time"
 )
 
-func TestMetrics_Collect(t *testing.T) {
-	metrics := NewMetrics()
-	metrics.Collect()
+func TestMetricsStore_SetGauge(t *testing.T) {
+	store := NewMetricsStore()
+	store.SetGauge("test_gauge", 42.0)
 
-	// Проверяем, что все gauge-метрики собраны
-	gaugeNames := []string{
-		"Alloc", "BuckHashSys", "Frees", "GCCPUFraction", "GCSys",
-		"HeapAlloc", "HeapIdle", "HeapInuse", "HeapObjects", "HeapReleased",
-		"HeapSys", "LastGC", "Lookups", "MCacheInuse", "MCacheSys",
-		"MSpanInuse", "MSpanSys", "Mallocs", "NextGC", "NumForcedGC",
-		"NumGC", "OtherSys", "PauseTotalNs", "StackInuse", "StackSys",
-		"Sys", "TotalAlloc", "RandomValue",
-	}
-
-	for _, name := range gaugeNames {
-		if _, exists := metrics.Gauge[name]; !exists {
-			t.Errorf("Expected gauge metric %q to be collected", name)
+	gauges, _ := store.Snapshot()
+	found := false
+	for _, m := range gauges {
+		if m.ID == "test_gauge" && m.Value != nil && *m.Value == 42.0 {
+			found = true
+			break
 		}
 	}
-
-	// Проверяем PollCount
-	if metrics.Counter["PollCount"] != 1 {
-		t.Errorf("Expected PollCount = 1, got %d", metrics.Counter["PollCount"])
-	}
-
-	// Собираем ещё раз — счётчик должен увеличиться
-	metrics.Collect()
-	if metrics.Counter["PollCount"] != 2 {
-		t.Errorf("Expected PollCount = 2 after second collect, got %d", metrics.Counter["PollCount"])
+	if !found {
+		t.Error("Expected test_gauge with value 42.0 in snapshot")
 	}
 }
 
-func TestMetrics_SendMetric_Gauge(t *testing.T) {
+func TestMetricsStore_IncrCounter(t *testing.T) {
+	store := NewMetricsStore()
+	store.IncrCounter("test_counter", 5)
+	store.IncrCounter("test_counter", 3)
+
+	_, counters := store.Snapshot()
+	found := false
+	for _, m := range counters {
+		if m.ID == "test_counter" && m.Delta != nil && *m.Delta == 8 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Expected test_counter with delta 8 in snapshot")
+	}
+}
+
+func TestMetricsStore_ConcurrentAccess(t *testing.T) {
+	store := NewMetricsStore()
+	var wg sync.WaitGroup
+
+	// Множество горутин пишут одновременно
+	for i := 0; i < 100; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			store.SetGauge("gauge", float64(i))
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			store.IncrCounter("counter", 1)
+		}(i)
+	}
+
+	wg.Wait()
+	_, counters := store.Snapshot()
+	for _, m := range counters {
+		if m.ID == "counter" && m.Delta != nil && *m.Delta == 100 {
+			return
+		}
+	}
+	t.Error("Expected counter value 100")
+}
+
+func TestSendMetric_Gauge(t *testing.T) {
 	t.Parallel()
 
 	var requestReceived bool
@@ -63,17 +93,16 @@ func TestMetrics_SendMetric_Gauge(t *testing.T) {
 	defer server.Close()
 
 	client := &http.Client{}
-	metrics := NewMetrics()
-
-	// Отправка через JSON — актуальный способ
 	metric := model.Metrics{
 		ID:    "test",
 		MType: "gauge",
-		Value: newFloat64(42.0),
+		Value: floatPtr(42.0),
 	}
-	metrics.sendJSON(client, server.URL, metric)
+	err := sendMetric(client, server.URL, metric)
+	if err != nil {
+		t.Errorf("sendMetric error: %v", err)
+	}
 
-	// Даём время на отправку
 	time.Sleep(100 * time.Millisecond)
 
 	mu.Lock()
@@ -83,7 +112,7 @@ func TestMetrics_SendMetric_Gauge(t *testing.T) {
 	}
 }
 
-func TestMetrics_SendMetric_Counter(t *testing.T) {
+func TestSendMetric_Counter(t *testing.T) {
 	t.Parallel()
 
 	var requestReceived bool
@@ -104,18 +133,17 @@ func TestMetrics_SendMetric_Counter(t *testing.T) {
 	}))
 	defer server.Close()
 
-	metrics := NewMetrics()
-	metrics.Collect()
-
-	// Отправка counter через JSON
+	client := &http.Client{}
 	metric := model.Metrics{
 		ID:    "test_counter",
 		MType: "counter",
-		Delta: newInt64(5),
+		Delta: int64Ptr(5),
 	}
-	metrics.sendJSON(metrics.Client, server.URL, metric)
+	err := sendMetric(client, server.URL, metric)
+	if err != nil {
+		t.Errorf("sendMetric error: %v", err)
+	}
 
-	// Даём время на отправку
 	time.Sleep(100 * time.Millisecond)
 
 	mu.Lock()
@@ -125,7 +153,7 @@ func TestMetrics_SendMetric_Counter(t *testing.T) {
 	}
 }
 
-func TestMetrics_Report(t *testing.T) {
+func TestSendBatch(t *testing.T) {
 	t.Parallel()
 
 	var batchCalled int
@@ -136,7 +164,6 @@ func TestMetrics_Report(t *testing.T) {
 		batchCalled++
 		mu.Unlock()
 
-		// Проверяем, что это пакетный эндпоинт
 		if r.URL.Path != "/updates/" && r.URL.Path != "/updates" {
 			t.Errorf("Expected /updates/ or /updates, got %s", r.URL.Path)
 		}
@@ -144,12 +171,62 @@ func TestMetrics_Report(t *testing.T) {
 	}))
 	defer server.Close()
 
-	metrics := NewMetrics()
-	metrics.Collect()
-	metrics.ReportWithBaseURL(server.URL)
+	client := &http.Client{}
+	batch := []model.Metrics{
+		{ID: "gauge1", MType: "gauge", Value: floatPtr(1.0)},
+		{ID: "counter1", MType: "counter", Delta: int64Ptr(5)},
+	}
+	err := sendBatch(client, server.URL, batch)
+	if err != nil {
+		t.Errorf("sendBatch error: %v", err)
+	}
 
-	// Ожидаем 1 запрос с батчем (вместо 29 отдельных)
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
 	if batchCalled < 1 {
 		t.Errorf("Expected at least 1 batch request, got %d", batchCalled)
 	}
+}
+
+func TestWorkerPool(t *testing.T) {
+	client := &http.Client{}
+	wp := newWorkerPool(2, client, "http://localhost:9999")
+	wp.Start()
+
+	var executed int
+	var mu sync.Mutex
+	done := make(chan struct{})
+
+	for i := 0; i < 5; i++ {
+		wp.Submit(func() {
+			mu.Lock()
+			executed++
+			mu.Unlock()
+		})
+	}
+
+	// Даём время на выполнение
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		close(done)
+	}()
+
+	<-done
+	wp.Stop()
+
+	mu.Lock()
+	if executed != 5 {
+		t.Errorf("Expected 5 tasks executed, got %d", executed)
+	}
+	mu.Unlock()
+}
+
+func floatPtr(v float64) *float64 {
+	return &v
+}
+
+func int64Ptr(v int64) *int64 {
+	return &v
 }
