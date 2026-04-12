@@ -22,7 +22,7 @@ func HashMiddleware(secretKey string) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Для POST/PUT запросов проверяем входящий хеш
+			// Для POST/PUT запросов проверяем входящий хеш (если заголовок присутствует)
 			if r.Method == http.MethodPost || r.Method == http.MethodPut {
 				// Читаем тело запроса
 				bodyBytes, err := io.ReadAll(r.Body)
@@ -34,12 +34,14 @@ func HashMiddleware(secretKey string) func(http.Handler) http.Handler {
 				r.Body.Close()
 				r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-				// Проверяем хеш — всегда требуем заголовок при наличии ключа
+				// Проверяем хеш только если заголовок присутствует
 				receivedHash := r.Header.Get(HashSHA256Header)
-				expectedHash := hash.Sign(string(bodyBytes), secretKey)
-				if receivedHash != expectedHash {
-					http.Error(w, "Hash mismatch", http.StatusBadRequest)
-					return
+				if receivedHash != "" {
+					expectedHash := hash.Sign(string(bodyBytes), secretKey)
+					if receivedHash != expectedHash {
+						http.Error(w, "Hash mismatch", http.StatusBadRequest)
+						return
+					}
 				}
 			}
 

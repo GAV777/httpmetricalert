@@ -41,8 +41,9 @@ func TestHashMiddleware_MissingHash(t *testing.T) {
 
 	mw(handler).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", rr.Code)
+	// Без заголовка HashSHA256 запрос проходит (хеш не требуется)
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200 when no hash header present, got %d", rr.Code)
 	}
 }
 
