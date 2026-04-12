@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/GAV777/httpmetricalert/internal/model"
+	"github.com/GAV777/httpmetricalert/pkg/hash"
 	"github.com/GAV777/httpmetricalert/pkg/retry"
 )
 
@@ -31,16 +32,19 @@ var (
 	reportInterval int // в секундах
 	pollInterval   int // в секундах
 	baseURL        string
+	secretKey      string
 )
 
 func init() {
 	addr := getEnvOrDefault("ADDRESS", "localhost:8080")
 	reportStr := getEnvOrDefault("REPORT_INTERVAL", "10")
 	pollStr := getEnvOrDefault("POLL_INTERVAL", "2")
+	key := getEnvOrDefault("KEY", "")
 
 	flag.StringVar(&serverAddress, "a", addr, "HTTP server address")
 	flag.IntVar(&reportInterval, "r", parseIntOrPanic(reportStr, "REPORT_INTERVAL"), "Report interval in seconds")
 	flag.IntVar(&pollInterval, "p", parseIntOrPanic(pollStr, "POLL_INTERVAL"), "Poll interval in seconds")
+	flag.StringVar(&secretKey, "k", key, "Secret key for SHA256 hashing")
 }
 
 func getEnvOrDefault(key, defaultValue string) string {
@@ -186,6 +190,12 @@ func (m *Metrics) sendJSON(client *http.Client, baseURL string, metric model.Met
 		req.Header.Set("Content-Encoding", "gzip")
 		req.Header.Set("Accept-Encoding", "gzip")
 
+		// Вычисляем и добавляем хеш тела запроса
+		if secretKey != "" {
+			h := hash.Sign(buf.String(), secretKey)
+			req.Header.Set("HashSHA256", h)
+		}
+
 		resp, err := client.Do(req)
 		if err != nil {
 			return err // Potentially retriable (network error)
@@ -235,6 +245,12 @@ func (m *Metrics) sendBatchJSON(client *http.Client, baseURL string, batch []mod
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Content-Encoding", "gzip")
 		req.Header.Set("Accept-Encoding", "gzip")
+
+		// Вычисляем и добавляем хеш тела запроса
+		if secretKey != "" {
+			h := hash.Sign(buf.String(), secretKey)
+			req.Header.Set("HashSHA256", h)
+		}
 
 		resp, err := client.Do(req)
 		if err != nil {

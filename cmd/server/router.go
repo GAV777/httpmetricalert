@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/GAV777/httpmetricalert/internal/config"
 	"github.com/GAV777/httpmetricalert/internal/handlers"
 	"github.com/GAV777/httpmetricalert/internal/middleware"
 	"net/http"
@@ -25,6 +26,10 @@ func setupRouter(handler *handlers.MetricsHandler) http.Handler {
 	// Защита от //
 	r.Use(noDoubleSlashes)
 	r.Use(chimiddleware.StripSlashes)
+
+	// Подключаем middleware для проверки хеша (до gzip — хеш от сжатого тела)
+	secretKey := config.GetSecretKey()
+	r.Use(middleware.HashMiddleware(secretKey))
 
 	// Подключаем gzip middleware
 	r.Use(middleware.GzipMiddleware)

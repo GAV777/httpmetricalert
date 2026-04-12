@@ -7,10 +7,13 @@ import (
 )
 
 var serverAddress string
+var secretKey string
 
 func init() {
 	addr := getEnvOrDefault("ADDRESS", "localhost:8080")
+	key := getEnvOrDefault("KEY", "")
 	flag.StringVar(&serverAddress, "a", addr, "адрес эндпоинта HTTP-сервера")
+	flag.StringVar(&secretKey, "k", key, "секретный ключ для SHA256 хеширования")
 }
 
 func GetServerAddress() string {
@@ -32,4 +35,9 @@ func GetServerAddress() string {
 	}
 
 	return cleanAddr
+}
+
+// GetSecretKey возвращает секретный ключ для хеширования
+func GetSecretKey() string {
+	return secretKey
 }
