@@ -27,12 +27,12 @@ func setupRouter(handler *handlers.MetricsHandler) http.Handler {
 	r.Use(noDoubleSlashes)
 	r.Use(chimiddleware.StripSlashes)
 
-	// Подключаем middleware для проверки хеша (до gzip — хеш от сжатого тела)
-	secretKey := config.GetSecretKey()
-	r.Use(middleware.HashMiddleware(secretKey))
-
 	// Подключаем gzip middleware
 	r.Use(middleware.GzipMiddleware)
+
+	// Подключаем middleware для проверки хеша (после gzip — хеш от распакованного тела)
+	secretKey := config.GetSecretKey()
+	r.Use(middleware.HashMiddleware(secretKey))
 
 	// Маршруты
 	r.Post("/update", handler.UpdateJSONHandler)

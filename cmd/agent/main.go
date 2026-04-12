@@ -190,9 +190,9 @@ func (m *Metrics) sendJSON(client *http.Client, baseURL string, metric model.Met
 		req.Header.Set("Content-Encoding", "gzip")
 		req.Header.Set("Accept-Encoding", "gzip")
 
-		// Вычисляем и добавляем хеш тела запроса
+		// Вычисляем хеш от несжатого тела (сервер проверяет после распаковки)
 		if secretKey != "" {
-			h := hash.Sign(buf.String(), secretKey)
+			h := hash.Sign(string(data), secretKey)
 			req.Header.Set("HashSHA256", h)
 		}
 
@@ -246,9 +246,9 @@ func (m *Metrics) sendBatchJSON(client *http.Client, baseURL string, batch []mod
 		req.Header.Set("Content-Encoding", "gzip")
 		req.Header.Set("Accept-Encoding", "gzip")
 
-		// Вычисляем и добавляем хеш тела запроса
+		// Вычисляем хеш от несжатого тела (сервер проверяет после распаковки)
 		if secretKey != "" {
-			h := hash.Sign(buf.String(), secretKey)
+			h := hash.Sign(string(data), secretKey)
 			req.Header.Set("HashSHA256", h)
 		}
 
