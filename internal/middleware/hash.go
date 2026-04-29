@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 
 	"github.com/GAV777/httpmetricalert/pkg/hash"
@@ -10,8 +11,8 @@ import (
 // HashSHA256Header имя заголовка для хеша
 const HashSHA256Header = "HashSHA256"
 
-// HashMiddleware создаёт middleware для установки SHA256 хеша в ответ.
-// Если ключ пустой, middleware не добавляет хеш.
+// HashMiddleware создаёт middleware для проверки SHA256 хеша запроса и установки хеша в ответ.
+// Если ключ пустой, middleware пропускает проверку и не добавляет хеш в ответ.
 func HashMiddleware(secretKey string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -19,6 +20,26 @@ func HashMiddleware(secretKey string) func(http.Handler) http.Handler {
 			if secretKey == "" {
 				next.ServeHTTP(w, r)
 				return
+			}
+
+			// Читаем тело запроса для проверки хеша
+			if r.Body != nil && r.ContentLength > 0 {
+				bodyBytes, err := io.ReadAll(r.Body)
+				if err != nil {
+					http.Error(w, "Failed to read request body", http.StatusBadRequest)
+					return
+				}
+				// Восстанавливаем тело запроса для последующих обработчиков
+				r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+				// Проверяем хеш, если он указан в заголовке
+				if receivedHash := r.Header.Get(HashSHA256Header); receivedHash != "" {
+					computedHash := hash.Sign(string(bodyBytes), secretKey)
+					if receivedHash != computedHash {
+						http.Error(w, "Invalid hash", http.StatusBadRequest)
+						return
+					}
+				}
 			}
 
 			// Обёртка для захвата тела ответа — полностью буферизуем

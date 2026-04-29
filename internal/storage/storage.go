@@ -41,83 +41,47 @@ func NewStorage() MetricsStorage {
 	return newMemStorageOnly()
 }
 
-// newFileStorage создаёт хранилище с сохранением в файл
-func newFileStorage() *MemStorage {
+// initMemStorage инициализирует хранилище: загружает данные и запускает периодическое сохранение
+func initMemStorage(dbAttempted bool) *MemStorage {
 	storage := &MemStorage{
 		data:        make(map[string]model.Metrics),
-		dbAttempted: true, // БД была настроена, но подключение не удалось
+		dbAttempted: dbAttempted,
 	}
 
 	if config.ShouldRestore() {
 		_ = storage.Load()
 	}
 
-	if config.StoreInterval() > 0 {
-		go func() {
-			ticker := time.NewTicker(time.Duration(config.StoreInterval()) * time.Second)
-			defer ticker.Stop()
-			for range ticker.C {
-				_ = storage.Save()
-			}
-		}()
+	// В синхронном режиме (interval == 0) сохранение происходит после каждой операции
+	if config.StoreInterval() == 0 {
+		return storage
 	}
 
+	// Запускаем горутину для периодического сохранения
+	go func() {
+		ticker := time.NewTicker(time.Duration(config.StoreInterval()) * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			_ = storage.Save()
+		}
+	}()
+
 	return storage
+}
+
+// newFileStorage создаёт хранилище с сохранением в файл
+func newFileStorage() *MemStorage {
+	return initMemStorage(true) // БД была настроена, но подключение не удалось
 }
 
 // newMemStorageOnly создаёт хранилище только в памяти
 func newMemStorageOnly() *MemStorage {
-	storage := &MemStorage{
-		data: make(map[string]model.Metrics),
-	}
-
-	if config.ShouldRestore() {
-		storage.Load()
-	}
-
-	if config.StoreInterval() == 0 {
-		// Sync mode — no ticker
-		return storage
-	}
-
-	// Start periodic save
-	go func() {
-		ticker := time.NewTicker(time.Duration(config.StoreInterval()) * time.Second)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			storage.Save()
-		}
-	}()
-
-	return storage
+	return initMemStorage(false)
 }
 
 func NewMemStorage() *MemStorage {
-	storage := &MemStorage{
-		data: make(map[string]model.Metrics),
-	}
-
-	if config.ShouldRestore() {
-		storage.Load()
-	}
-
-	if config.StoreInterval() == 0 {
-		// Sync mode — no ticker
-		return storage
-	}
-
-	// Start periodic save
-	go func() {
-		ticker := time.NewTicker(time.Duration(config.StoreInterval()) * time.Second)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			storage.Save()
-		}
-	}()
-
-	return storage
+	return initMemStorage(false)
 }
 
 func (s *MemStorage) Save() error {
@@ -254,7 +218,6 @@ func (s *MemStorage) Ping() error {
 // UpdateBatch обновляет множество метрик пакетом
 func (s *MemStorage) UpdateBatch(metrics []model.Metrics) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	for _, metric := range metrics {
 		switch metric.MType {
@@ -293,5 +256,6 @@ func (s *MemStorage) UpdateBatch(metrics []model.Metrics) error {
 		s.mu.Lock()
 	}
 
+	s.mu.Unlock()
 	return nil
 }

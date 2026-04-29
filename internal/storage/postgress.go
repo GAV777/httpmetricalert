@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log"
+	"strings"
 
 	"github.com/GAV777/httpmetricalert/internal/migration"
 	"github.com/GAV777/httpmetricalert/internal/model"
@@ -293,19 +294,5 @@ func isUniqueViolation(err error) bool {
 	if err == nil {
 		return false
 	}
-	errMsg := err.Error()
-	return containsSubstring(errMsg, pgerrcode.UniqueViolation)
-}
-
-func containsSubstring(s, substr string) bool {
-	return len(s) >= len(substr) && searchSubstring(s, substr)
-}
-
-func searchSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(err.Error(), pgerrcode.UniqueViolation)
 }

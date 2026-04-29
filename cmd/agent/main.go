@@ -297,6 +297,7 @@ type workerPool struct {
 	tasks   chan func()
 	client  *http.Client
 	baseURL string
+	size    int
 	wg      sync.WaitGroup
 	stopCh  chan struct{}
 }
@@ -306,12 +307,13 @@ func newWorkerPool(size int, client *http.Client, baseURL string) *workerPool {
 		tasks:   make(chan func(), size*2),
 		client:  client,
 		baseURL: baseURL,
+		size:    size,
 		stopCh:  make(chan struct{}),
 	}
 }
 
 func (wp *workerPool) Start() {
-	for i := 0; i < rateLimit; i++ {
+	for i := 0; i < wp.size; i++ {
 		wp.wg.Add(1)
 		go func() {
 			defer wp.wg.Done()
