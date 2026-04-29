@@ -40,7 +40,7 @@ func TestGetValueHandler(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	storage.UpdateGauge("test_gauge", 123.45)
+	storage.SetGauge("test_gauge", 123.45)
 
 	handler := handlers.NewMetricsHandler(storage)
 
@@ -64,8 +64,8 @@ func TestListMetricsHandler(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	storage.UpdateGauge("test_gauge", 123.45)
-	storage.UpdateCounter("test_counter", 42)
+	storage.SetGauge("test_gauge", 123.45)
+	storage.SetCounter("test_counter", 42)
 
 	handler := handlers.NewMetricsHandler(storage)
 
