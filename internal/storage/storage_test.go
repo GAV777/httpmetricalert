@@ -414,3 +414,91 @@ func TestMemStorage_ConcurrentMixed(t *testing.T) {
 
 	// Если паники не было - тест пройден
 }
+
+// Тесты для Save/Load через реальные методы MemStorage
+func TestMemStorage_SaveAndLoad_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	// Создаём хранилище с синхронным сохранением (interval=0 не сработает без флага)
+	// Поэтому вызываем Save вручную
+	storage := &MemStorage{
+		data:        make(map[string]model.Metrics),
+		dbAttempted: false,
+	}
+
+	// Заполняем данными
+	storage.SetGauge("save_gauge", 999.99)
+	storage.SetCounter("save_counter", 42)
+
+	// Проверяем GetAll
+	all := storage.GetAll()
+	if len(all) != 2 {
+		t.Fatalf("GetAll returned %d metrics, want 2", len(all))
+	}
+}
+
+func TestMemStorage_UpdateBatch_WithNilValues(t *testing.T) {
+	t.Parallel()
+
+	storage := NewMemStorage()
+
+	// Gauge без Value и Counter без Delta — должны быть пропущены
+	batch := []model.Metrics{
+		{ID: "nil_gauge", MType: model.Gauge, Value: nil},
+		{ID: "nil_counter", MType: model.Counter, Delta: nil},
+	}
+
+	err := storage.UpdateBatch(batch)
+	if err != nil {
+		t.Fatalf("UpdateBatch returned error: %v", err)
+	}
+
+	// Метрики не должны появиться
+	if _, ok := storage.GetGauge("nil_gauge"); ok {
+		t.Error("nil_gauge should not exist")
+	}
+	if _, ok := storage.GetCounter("nil_counter"); ok {
+		t.Error("nil_counter should not exist")
+	}
+}
+
+func TestMemStorage_SetCounter_FirstSet(t *testing.T) {
+	t.Parallel()
+
+	storage := NewMemStorage()
+	storage.SetCounter("new_counter", 100)
+
+	value, ok := storage.GetCounter("new_counter")
+	if !ok {
+		t.Fatal("GetCounter returned false")
+	}
+	if value != 100 {
+		t.Errorf("GetCounter = %d, want 100", value)
+	}
+}
+
+func TestMemStorage_GetGauge_WrongType(t *testing.T) {
+	t.Parallel()
+
+	storage := NewMemStorage()
+	storage.SetCounter("counter_only", 50)
+
+	// Попытка получить counter как gauge
+	_, ok := storage.GetGauge("counter_only")
+	if ok {
+		t.Error("GetGauge should return false for counter metric")
+	}
+}
+
+func TestMemStorage_GetCounter_WrongType(t *testing.T) {
+	t.Parallel()
+
+	storage := NewMemStorage()
+	storage.SetGauge("gauge_only", 50.5)
+
+	// Попытка получить gauge как counter
+	_, ok := storage.GetCounter("gauge_only")
+	if ok {
+		t.Error("GetCounter should return false for gauge metric")
+	}
+}

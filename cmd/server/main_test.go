@@ -8,79 +8,194 @@ import (
 
 	"github.com/GAV777/httpmetricalert/internal/handlers"
 	"github.com/GAV777/httpmetricalert/internal/storage"
-	"github.com/go-chi/chi/v5"
 )
 
-func TestUpdateHandler(t *testing.T) {
+func TestSetupRouter(t *testing.T) {
 	t.Parallel()
 
-	// Создаём хранилище и хендлер
 	store := storage.NewMemStorage()
 	handler := handlers.NewMetricsHandler(store, nil)
+	r := setupRouter(handler)
 
-	// Создаём chi-роутер и монтируем маршрут
-	r := chi.NewRouter()
-	r.Post("/update/{type}/{name}/{value}", handler.UpdateHandler)
+	// Проверяем что роутер не nil
+	if r == nil {
+		t.Fatal("setupRouter returned nil")
+	}
 
-	// Создаём запрос
-	req := httptest.NewRequest("POST", "/update/gauge/test_gauge/123.45", strings.NewReader("123.45"))
+	// Проверяем маршрут POST /update
+	req := httptest.NewRequest(http.MethodPost, "/update/gauge/test/42.0", nil)
 	req.Header.Set("Content-Type", "text/plain")
-
 	rec := httptest.NewRecorder()
-
-	// Обрабатываем через роутер
 	r.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("Expected status 200, got %d; body: %s", rec.Code, rec.Body.String())
+		t.Fatalf("Expected 200, got %d", rec.Code)
 	}
 }
 
-func TestGetValueHandler(t *testing.T) {
+func TestSetupRouter_NotFound(t *testing.T) {
 	t.Parallel()
 
 	store := storage.NewMemStorage()
-	store.SetGauge("test_gauge", 123.45)
-
 	handler := handlers.NewMetricsHandler(store, nil)
+	r := setupRouter(handler)
 
-	r := chi.NewRouter()
-	r.Get("/value/{type}/{name}", handler.GetValueHandler)
-
-	req := httptest.NewRequest("GET", "/value/gauge/test_gauge", nil)
+	req := httptest.NewRequest(http.MethodGet, "/nonexistent", nil)
 	rec := httptest.NewRecorder()
-
 	r.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("Expected status 200, got %d", rec.Code)
-	}
-	if rec.Body.String() != "123.45" {
-		t.Errorf("Expected body '123.45', got '%s'", rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d", rec.Code)
 	}
 }
 
-func TestListMetricsHandler(t *testing.T) {
+func TestSetupRouter_DoubleSlashRejected(t *testing.T) {
 	t.Parallel()
 
 	store := storage.NewMemStorage()
-	store.SetGauge("test_gauge", 123.45)
-	store.SetCounter("test_counter", 42)
-
 	handler := handlers.NewMetricsHandler(store, nil)
+	r := setupRouter(handler)
 
-	r := chi.NewRouter()
-	r.Get("/", handler.ListMetricsHandler)
-
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "//value/gauge/test", nil)
 	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
 
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 for double slash, got %d", rec.Code)
+	}
+}
+
+func TestNoDoubleSlashes(t *testing.T) {
+	t.Parallel()
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := noDoubleSlashes(next)
+
+	// Запрос с двойным слэшем — должен быть отклонён
+	req := httptest.NewRequest(http.MethodGet, "//test", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 for //test, got %d", rec.Code)
+	}
+
+	// Запрос без двойного слэша — должен пройти
+	req = httptest.NewRequest(http.MethodGet, "/test", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected 200 for /test, got %d", rec.Code)
+	}
+}
+
+func TestSetupAuditNotifier_NoConfig(t *testing.T) {
+	t.Parallel()
+
+	// Без конфигурации аудита нотификатор не должен иметь наблюдателей
+	notifier := setupAuditNotifier()
+	if notifier.HasObservers() {
+		t.Error("Expected no observers when audit is not configured")
+	}
+}
+
+func TestAccessLog(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	// Функция accessLog просто логирует — проверяем что не паникует
+	accessLog(req, http.StatusOK, 100, 50)
+}
+
+func TestSetupRouter_PingEndpoint(t *testing.T) {
+	t.Parallel()
+
+	store := storage.NewMemStorage()
+	handler := handlers.NewMetricsHandler(store, nil)
+	r := setupRouter(handler)
+
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("Expected status 200, got %d", rec.Code)
+		t.Errorf("Expected 200, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "test_gauge") || !strings.Contains(rec.Body.String(), "test_counter") {
-		t.Error("Expected HTML to contain both metrics")
+	if rec.Body.String() != "OK" {
+		t.Errorf("Expected body 'OK', got '%s'", rec.Body.String())
+	}
+}
+
+func TestSetupRouter_UpdateBatch(t *testing.T) {
+	t.Parallel()
+
+	store := storage.NewMemStorage()
+	handler := handlers.NewMetricsHandler(store, nil)
+	r := setupRouter(handler)
+
+	batch := `[{"id":"batch_g","type":"gauge","value":1.0},{"id":"batch_c","type":"counter","delta":5}]`
+	req := httptest.NewRequest(http.MethodPost, "/updates", strings.NewReader(batch))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", rec.Code)
+	}
+
+	// Проверяем что метрики сохранились
+	if v, ok := store.GetGauge("batch_g"); !ok || v != 1.0 {
+		t.Errorf("Expected gauge value 1.0, got %v", v)
+	}
+	if v, ok := store.GetCounter("batch_c"); !ok || v != 5 {
+		t.Errorf("Expected counter value 5, got %v", v)
+	}
+}
+
+func TestSetupRouter_UpdateJSON(t *testing.T) {
+	t.Parallel()
+
+	store := storage.NewMemStorage()
+	handler := handlers.NewMetricsHandler(store, nil)
+	r := setupRouter(handler)
+
+	body := `{"id":"json_test","type":"gauge","value":99.9}`
+	req := httptest.NewRequest(http.MethodPost, "/update", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", rec.Code)
+	}
+
+	if v, ok := store.GetGauge("json_test"); !ok || v != 99.9 {
+		t.Errorf("Expected gauge value 99.9, got %v", v)
+	}
+}
+
+func TestSetupRouter_GetValueJSON(t *testing.T) {
+	t.Parallel()
+
+	store := storage.NewMemStorage()
+	store.SetGauge("get_json", 77.7)
+	handler := handlers.NewMetricsHandler(store, nil)
+	r := setupRouter(handler)
+
+	body := `{"id":"get_json","type":"gauge"}`
+	req := httptest.NewRequest(http.MethodPost, "/value", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "77.7") {
+		t.Errorf("Expected body to contain '77.7', got '%s'", rec.Body.String())
 	}
 }
