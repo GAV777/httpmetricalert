@@ -16,6 +16,7 @@ func init() {
 	flag.StringVar(&secretKey, "k", key, "секретный ключ для SHA256 хеширования")
 }
 
+// GetServerAddress возвращает адрес сервера, очищенный от протокола.
 func GetServerAddress() string {
 	cleanAddr := strings.TrimPrefix(serverAddress, "http://")
 	cleanAddr = strings.TrimPrefix(cleanAddr, "https://")

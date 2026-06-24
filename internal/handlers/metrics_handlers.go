@@ -30,6 +30,7 @@ type auditNotifier interface {
 	HasObservers() bool
 }
 
+// UpdateGauge обрабатывает POST /update/{type}/{name}/{value} для gauge-метрик.
 func (h *MetricsHandler) UpdateGauge(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	valueStr := chi.URLParam(r, "value")

@@ -15,8 +15,10 @@ import (
 	_ "github.com/lib/pq"
 )
 
+// ErrNotFound возвращается, когда запрашиваемая метрика не найдена в БД.
 var ErrNotFound = errors.New("metric not found")
 
+// PostgresStorage — хранилище метрик на основе PostgreSQL.
 type PostgresStorage struct {
 	db       *sql.DB
 	retryCfg retry.Config

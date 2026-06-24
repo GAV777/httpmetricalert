@@ -12,32 +12,35 @@ import (
 	"github.com/GAV777/httpmetricalert/internal/model"
 )
 
+// ErrDatabaseNotAvailable возвращается при попытке пинговать БД,
+// когда подключение к PostgreSQL было настроено, но установить его не удалось.
 var ErrDatabaseNotAvailable = errors.New("database is not available")
 
+// MemStorage — потокобезопасное in-memory хранилище метрик
+// с поддержкой периодического сохранения в файл.
 type MemStorage struct {
 	data        map[string]model.Metrics
 	mu          sync.RWMutex
-	dbAttempted bool // Попытка подключения к БД была, но не удалась
+	dbAttempted bool
 }
 
+// NewStorage создаёт хранилище метрик, выбирая тип по конфигурации:
+// PostgreSQL при наличии DSN, файловое или in-memory в качестве fallback.
 func NewStorage() MetricsStorage {
 	dsn := config.DatabaseDSN()
 
-	// Пытаемся подключиться к PostgreSQL, если указан DSN
 	if dsn != "" {
 		storage, err := NewPostgresStorage(dsn)
 		if err != nil {
-			log.Printf("❌ Не удалось подключиться к PostgreSQL: %v", err)
-			log.Println("⚠️ Пробуем хранилище в файле")
-			// Пробуем файловое хранилище
+			log.Printf("Failed to connect to PostgreSQL: %v", err)
+			log.Println("Falling back to file storage")
 			return newFileStorage()
 		}
-		log.Println("✅ Используем PostgreSQL")
+		log.Println("Using PostgreSQL storage")
 		return storage
 	}
 
-	// Если DSN не указан, используем файловое хранилище или память
-	log.Println("⚠️ DATABASE_DSN не указан, используем in-memory хранилище")
+	log.Println("Using in-memory storage")
 	return newMemStorageOnly()
 }
 
@@ -80,10 +83,12 @@ func newMemStorageOnly() *MemStorage {
 	return initMemStorage(false)
 }
 
+// NewMemStorage создаёт пустое in-memory хранилище метрик.
 func NewMemStorage() *MemStorage {
 	return initMemStorage(false)
 }
 
+// Save записывает все метрики в файл, указанный в конфигурации.
 func (s *MemStorage) Save() error {
 	s.mu.RLock()
 	data := make([]model.Metrics, 0, len(s.data))
@@ -108,6 +113,7 @@ func (s *MemStorage) Save() error {
 	return nil
 }
 
+// Load загружает метрики из файла, указанного в конфигурации.
 func (s *MemStorage) Load() error {
 	file, err := os.Open(config.FileStoragePath())
 	if os.IsNotExist(err) {
@@ -136,6 +142,7 @@ func (s *MemStorage) Load() error {
 	return nil
 }
 
+// SetGauge устанавливает значение gauge-метрики.
 func (s *MemStorage) SetGauge(name string, value float64) {
 	s.mu.Lock()
 	s.data[name] = model.Metrics{
@@ -151,6 +158,7 @@ func (s *MemStorage) SetGauge(name string, value float64) {
 	}
 }
 
+// SetCounter устанавливает значение counter-метрики с инкрементом.
 func (s *MemStorage) SetCounter(name string, delta int64) {
 	s.mu.Lock()
 	existing, ok := s.data[name]
@@ -174,6 +182,7 @@ func (s *MemStorage) SetCounter(name string, delta int64) {
 	}
 }
 
+// GetGauge возвращает значение gauge-метрики по имени.
 func (s *MemStorage) GetGauge(name string) (float64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -185,6 +194,7 @@ func (s *MemStorage) GetGauge(name string) (float64, bool) {
 	return *m.Value, true
 }
 
+// GetCounter возвращает значение counter-метрики по имени.
 func (s *MemStorage) GetCounter(name string) (int64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -196,6 +206,7 @@ func (s *MemStorage) GetCounter(name string) (int64, bool) {
 	return *m.Delta, true
 }
 
+// GetAll возвращает копию всех метрик из хранилища.
 func (s *MemStorage) GetAll() []model.Metrics {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -207,6 +218,7 @@ func (s *MemStorage) GetAll() []model.Metrics {
 	return result
 }
 
+// Ping проверяет доступность хранилища.
 func (s *MemStorage) Ping() error {
 	// Если БД была настроена, но подключение не удался — возвращаем ошибку
 	if s.dbAttempted {

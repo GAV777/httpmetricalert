@@ -66,13 +66,25 @@ func parseBool(s string) bool {
 	}
 }
 
-// Экспорт значений
-func StoreInterval() int      { return storeInterval }
+// StoreInterval возвращает интервал сохранения метрик в секундах.
+func StoreInterval() int { return storeInterval }
+
+// FileStoragePath возвращает путь к файлу хранилища метрик.
 func FileStoragePath() string { return fileStoragePath }
-func ShouldRestore() bool     { return restore }
-func GzipEnabled() bool       { return gzipEnabled }
-func AuditFile() string       { return auditFile }
-func AuditURL() string        { return auditURL }
+
+// ShouldRestore возвращает флаг восстановления метрик из файла при старте.
+func ShouldRestore() bool { return restore }
+
+// GzipEnabled возвращает флаг включения gzip-сжатия.
+func GzipEnabled() bool { return gzipEnabled }
+
+// AuditFile возвращает путь к файлу аудита (пустая строка = аудит отключён).
+func AuditFile() string { return auditFile }
+
+// AuditURL возвращает URL для отправки логов аудита (пустая строка = аудит отключён).
+func AuditURL() string { return auditURL }
+
+// ParseFlags разбирает флаги командной строки и переменные окружения.
 func ParseFlags() {
 	flag.Parse()
 	// Если флаг -d не был установлен явно, используем переменную окружения
@@ -81,6 +93,8 @@ func ParseFlags() {
 	}
 	// Если флаг -d установлен явно, используем его значение (даже если пустое)
 }
+
+// DatabaseDSN возвращает DSN для подключения к PostgreSQL.
 func DatabaseDSN() string { return databaseDSN }
 
 // isFlagSet проверяет, был ли флаг установлен в командной строке
