@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"io"
 	"net"
 	"time"
 
@@ -219,7 +220,7 @@ func (h *MetricsHandler) UpdateJSONHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(metric)
+	_ = writeJSON(w, metric)
 }
 
 // GetValueJSONHandler обрабатывает POST /value в формате JSON
@@ -244,7 +245,7 @@ func (h *MetricsHandler) GetValueJSONHandler(w http.ResponseWriter, r *http.Requ
 			MType: "gauge",
 			Value: &value,
 		}
-		_ = json.NewEncoder(w).Encode(resp)
+		_ = writeJSON(w, resp)
 
 	case "counter":
 		value, ok := h.Storage.GetCounter(req.ID)
@@ -257,7 +258,7 @@ func (h *MetricsHandler) GetValueJSONHandler(w http.ResponseWriter, r *http.Requ
 			MType: "counter",
 			Delta: &value,
 		}
-		_ = json.NewEncoder(w).Encode(resp)
+		_ = writeJSON(w, resp)
 
 	default:
 		http.Error(w, "Unsupported metric type", http.StatusBadRequest)
@@ -307,9 +308,9 @@ func (h *MetricsHandler) UpdateBatchHandler(w http.ResponseWriter, r *http.Reque
 
 	// Отправляем событие аудита
 	if h.Notifier != nil && h.Notifier.HasObservers() {
-		names := make([]string, 0, len(metrics))
-		for _, m := range metrics {
-			names = append(names, m.ID)
+		names := make([]string, len(metrics))
+		for i, m := range metrics {
+			names[i] = m.ID
 		}
 		h.Notifier.Notify(audit.AuditEvent{
 			Timestamp: time.Now().Unix(),
@@ -321,12 +322,24 @@ func (h *MetricsHandler) UpdateBatchHandler(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusOK)
 }
 
+// MarshalJSONEncoder сериализует значение в JSON и записывает в ResponseWriter
+func writeJSON(w io.Writer, v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(data)
+	return err
+}
+
 // getClientIP извлекает IP-адрес из запроса
 func getClientIP(r *http.Request) string {
-	// Проверяем X-Forwarded-For и X-Real-IP заголовки
+	// Проверяем X-Forwarded-For — берём только первый IP до запятой
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
+		if idx := strings.IndexByte(xff, ','); idx >= 0 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
 	}
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
 		return xri
