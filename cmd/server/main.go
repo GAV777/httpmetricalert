@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/GAV777/httpmetricalert/internal/audit"
 	"github.com/GAV777/httpmetricalert/internal/config"
 	"github.com/GAV777/httpmetricalert/internal/handlers"
 	"github.com/GAV777/httpmetricalert/internal/storage"
@@ -19,10 +20,35 @@ func main() {
 
 	addr := config.GetServerAddress()
 	store := storage.NewStorage()
-	handler := handlers.NewMetricsHandler(store)
+
+	// Создаём нотификатор аудита
+	notifier := setupAuditNotifier()
+
+	handler := handlers.NewMetricsHandler(store, notifier)
 
 	router := setupRouter(handler)
 
 	log.Printf("Starting server on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, router))
+}
+
+// setupAuditNotifier создаёт и настраивает нотификатор аудита
+func setupAuditNotifier() *audit.Notifier {
+	notifier := audit.NewNotifier()
+
+	if file := config.AuditFile(); file != "" {
+		notifier.AddObserver(audit.NewFileObserver(file))
+		log.Printf("Audit file observer enabled: %s", file)
+	}
+
+	if url := config.AuditURL(); url != "" {
+		notifier.AddObserver(audit.NewHTTPObserver(url))
+		log.Printf("Audit HTTP observer enabled: %s", url)
+	}
+
+	if !notifier.HasObservers() {
+		log.Println("Audit disabled (no --audit-file or --audit-url configured)")
+	}
+
+	return notifier
 }

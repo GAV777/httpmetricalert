@@ -34,13 +34,18 @@ func setupRouter(handler *MetricsHandler) *chi.Mux {
 	return r
 }
 
+// newTestHandler создаёт обработчик с nil-нотификатором (аудит отключён)
+func newTestHandler(s storage.MetricsStorage) *MetricsHandler {
+	return NewMetricsHandler(s, nil)
+}
+
 // ==================== UpdateHandler (text/plain) ====================
 
 func TestUpdateHandler_Gauge(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodPost, "/update/gauge/test_gauge/123.45", nil)
@@ -63,7 +68,7 @@ func TestUpdateHandler_Counter(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodPost, "/update/counter/test_counter/42", nil)
@@ -86,7 +91,7 @@ func TestUpdateHandler_MethodNotAllowed(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/update/gauge/test/123", nil)
@@ -103,7 +108,7 @@ func TestUpdateHandler_InvalidValue(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodPost, "/update/gauge/test/notanumber", nil)
@@ -121,7 +126,7 @@ func TestUpdateHandler_InvalidType(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodPost, "/update/invalid/test/123", nil)
@@ -139,7 +144,7 @@ func TestUpdateHandler_EmptyName(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodPost, "/update/gauge//123", nil)
@@ -157,7 +162,7 @@ func TestUpdateHandler_WhitespaceName(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	// Создаём запрос с именем которое после trim станет пустым
@@ -178,7 +183,7 @@ func TestUpdateHandler_CounterIncrement(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	// Первый запрос
@@ -203,7 +208,7 @@ func TestUpdateHandler_CounterNegative(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodPost, "/update/counter/neg_counter/-10", nil)
@@ -230,7 +235,7 @@ func TestGetValueHandler_Gauge(t *testing.T) {
 	storage := storage.NewMemStorage()
 	storage.SetGauge("get_gauge", 99.99)
 
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/value/gauge/get_gauge", nil)
@@ -255,7 +260,7 @@ func TestGetValueHandler_Counter(t *testing.T) {
 	storage := storage.NewMemStorage()
 	storage.SetCounter("get_counter", 42)
 
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/value/counter/get_counter", nil)
@@ -275,7 +280,7 @@ func TestGetValueHandler_NotFound(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/value/gauge/nonexistent", nil)
@@ -292,7 +297,7 @@ func TestGetValueHandler_EmptyName(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/value/gauge/", nil)
@@ -309,7 +314,7 @@ func TestGetValueHandler_InvalidType(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/value/invalid/name", nil)
@@ -328,7 +333,7 @@ func TestUpdateJSONHandler_Gauge(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	metric := model.Metrics{
@@ -358,7 +363,7 @@ func TestUpdateJSONHandler_Counter(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	metric := model.Metrics{
@@ -388,7 +393,7 @@ func TestUpdateJSONHandler_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodPost, "/update", strings.NewReader("not json"))
@@ -406,7 +411,7 @@ func TestUpdateJSONHandler_MissingValue(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	metric := model.Metrics{
@@ -431,7 +436,7 @@ func TestUpdateJSONHandler_MissingDelta(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	metric := model.Metrics{
@@ -456,7 +461,7 @@ func TestUpdateJSONHandler_UnsupportedType(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	metric := model.Metrics{
@@ -480,7 +485,7 @@ func TestUpdateJSONHandler_Response(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	metric := model.Metrics{
@@ -514,7 +519,7 @@ func TestGetValueJSONHandler_Gauge(t *testing.T) {
 	storage := storage.NewMemStorage()
 	storage.SetGauge("json_get_gauge", 77.77)
 
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := model.Metrics{ID: "json_get_gauge", MType: "gauge"}
@@ -546,7 +551,7 @@ func TestGetValueJSONHandler_Counter(t *testing.T) {
 	storage := storage.NewMemStorage()
 	storage.SetCounter("json_get_counter", 33)
 
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := model.Metrics{ID: "json_get_counter", MType: "counter"}
@@ -576,7 +581,7 @@ func TestGetValueJSONHandler_NotFound(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := model.Metrics{ID: "nonexistent", MType: "gauge"}
@@ -597,7 +602,7 @@ func TestGetValueJSONHandler_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	reqHTTP := httptest.NewRequest(http.MethodPost, "/value", strings.NewReader("not json"))
@@ -615,7 +620,7 @@ func TestGetValueJSONHandler_UnsupportedType(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := model.Metrics{ID: "test", MType: "histogram"}
@@ -638,7 +643,7 @@ func TestUpdateBatchHandler_Success(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	batch := []model.Metrics{
@@ -680,7 +685,7 @@ func TestUpdateBatchHandler_Empty(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	body, _ := json.Marshal([]model.Metrics{})
@@ -700,7 +705,7 @@ func TestUpdateBatchHandler_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader("not json"))
@@ -718,7 +723,7 @@ func TestUpdateBatchHandler_MissingGaugeValue(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	batch := []model.Metrics{
@@ -741,7 +746,7 @@ func TestUpdateBatchHandler_MissingCounterDelta(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	batch := []model.Metrics{
@@ -764,7 +769,7 @@ func TestUpdateBatchHandler_UnsupportedType(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	batch := []model.Metrics{
@@ -787,7 +792,7 @@ func TestUpdateBatchHandler_Mixed(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	// Батч с валидными и невалидными (пропускаются) метриками
@@ -824,7 +829,7 @@ func TestListMetricsHandler(t *testing.T) {
 	storage.SetGauge("list_gauge", 1.0)
 	storage.SetCounter("list_counter", 2)
 
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -852,7 +857,7 @@ func TestListMetricsHandler_Empty(t *testing.T) {
 	t.Parallel()
 
 	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	handler := newTestHandler(storage)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -870,8 +875,8 @@ func TestListMetricsHandler_Empty(t *testing.T) {
 func TestPingDB_Success(t *testing.T) {
 	t.Parallel()
 
-	storage := storage.NewMemStorage()
-	handler := NewMetricsHandler(storage)
+	memStore := storage.NewMemStorage()
+	handler := newTestHandler(memStore)
 	r := setupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
@@ -891,7 +896,8 @@ func TestPingDB_DatabaseNotAvailable(t *testing.T) {
 	t.Parallel()
 
 	handler := &MetricsHandler{
-		Storage: &memStorageWithDBError{},
+		Storage:  &memStorageWithDBError{},
+		Notifier: nil,
 	}
 	r := chi.NewRouter()
 	r.Get("/ping", handler.PingDB)

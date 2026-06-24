@@ -2,6 +2,10 @@ package handlers
 
 import (
 	"encoding/json"
+	"net"
+	"time"
+
+	"github.com/GAV777/httpmetricalert/internal/audit"
 	"github.com/GAV777/httpmetricalert/internal/model"
 	"github.com/GAV777/httpmetricalert/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -14,8 +18,15 @@ import (
 
 // MetricsHandler обрабатывает HTTP-запросы, используя MetricsStorage
 type MetricsHandler struct {
-	Storage storage.MetricsStorage
-	Tmpl    *template.Template
+	Storage  storage.MetricsStorage
+	Tmpl     *template.Template
+	Notifier auditNotifier
+}
+
+// auditNotifier — минимальный интерфейс для инъекции зависимости аудита
+type auditNotifier interface {
+	Notify(event audit.AuditEvent)
+	HasObservers() bool
 }
 
 func (h *MetricsHandler) UpdateGauge(w http.ResponseWriter, r *http.Request) {
@@ -31,7 +42,7 @@ func (h *MetricsHandler) UpdateGauge(w http.ResponseWriter, r *http.Request) {
 }
 
 // NewMetricsHandler создаёт новый обработчик с зависимостями
-func NewMetricsHandler(storage storage.MetricsStorage) *MetricsHandler {
+func NewMetricsHandler(store storage.MetricsStorage, notifier auditNotifier) *MetricsHandler {
 	tmpl := `
 <!DOCTYPE html>
 <html>
@@ -55,8 +66,9 @@ func NewMetricsHandler(storage storage.MetricsStorage) *MetricsHandler {
 	parsedTmpl := template.Must(template.New("metrics").Parse(tmpl))
 
 	return &MetricsHandler{
-		Storage: storage,
-		Tmpl:    parsedTmpl,
+		Storage:  store,
+		Tmpl:     parsedTmpl,
+		Notifier: notifier,
 	}
 }
 
@@ -106,6 +118,15 @@ func (h *MetricsHandler) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Invalid type", http.StatusBadRequest)
 		return
+	}
+
+	// Отправляем событие аудита
+	if h.Notifier != nil && h.Notifier.HasObservers() {
+		h.Notifier.Notify(audit.AuditEvent{
+			Timestamp: time.Now().Unix(),
+			Metrics:   []string{name},
+			IPAddress: getClientIP(r),
+		})
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -186,6 +207,15 @@ func (h *MetricsHandler) UpdateJSONHandler(w http.ResponseWriter, r *http.Reques
 	default:
 		http.Error(w, "Unsupported metric type", http.StatusBadRequest)
 		return
+	}
+
+	// Отправляем событие аудита
+	if h.Notifier != nil && h.Notifier.HasObservers() {
+		h.Notifier.Notify(audit.AuditEvent{
+			Timestamp: time.Now().Unix(),
+			Metrics:   []string{metric.ID},
+			IPAddress: getClientIP(r),
+		})
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -275,5 +305,36 @@ func (h *MetricsHandler) UpdateBatchHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Отправляем событие аудита
+	if h.Notifier != nil && h.Notifier.HasObservers() {
+		names := make([]string, 0, len(metrics))
+		for _, m := range metrics {
+			names = append(names, m.ID)
+		}
+		h.Notifier.Notify(audit.AuditEvent{
+			Timestamp: time.Now().Unix(),
+			Metrics:   names,
+			IPAddress: getClientIP(r),
+		})
+	}
+
 	w.WriteHeader(http.StatusOK)
+}
+
+// getClientIP извлекает IP-адрес из запроса
+func getClientIP(r *http.Request) string {
+	// Проверяем X-Forwarded-For и X-Real-IP заголовки
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+	// Fallback: RemoteAddr может быть в формате "ip:port"
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }

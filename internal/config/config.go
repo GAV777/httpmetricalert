@@ -15,6 +15,8 @@ var (
 	restore         bool
 	gzipEnabled     bool
 	databaseDSN     string
+	auditFile       string
+	auditURL        string
 )
 
 func init() {
@@ -22,12 +24,16 @@ func init() {
 	path := getEnvOrDefault("FILE_STORAGE_PATH", "/tmp/metrics.json")
 	restoreStr := getEnvOrDefault("RESTORE", "true")
 	gzipStr := getEnvOrDefault("ENABLE_GZIP", "false")
+	aFile := getEnvOrDefault("AUDIT_FILE", "")
+	aURL := getEnvOrDefault("AUDIT_URL", "")
 
 	flag.IntVar(&storeInterval, "i", parseInt(interval), "Store interval in seconds (0 for sync)")
 	flag.StringVar(&fileStoragePath, "f", path, "File path to store metrics")
 	flag.BoolVar(&restore, "r", parseBool(restoreStr), "Restore metrics from file on start")
 	flag.BoolVar(&gzipEnabled, "g", parseBool(gzipStr), "Enable GZIP compression for responses")
 	flag.StringVar(&databaseDSN, "d", "", "Database DSN (PostgreSQL)")
+	flag.StringVar(&auditFile, "audit-file", aFile, "Path to audit log file (empty = disabled)")
+	flag.StringVar(&auditURL, "audit-url", aURL, "URL to send audit logs via POST (empty = disabled)")
 }
 
 func getEnvOrDefault(key, defaultValue string) string {
@@ -65,6 +71,8 @@ func StoreInterval() int      { return storeInterval }
 func FileStoragePath() string { return fileStoragePath }
 func ShouldRestore() bool     { return restore }
 func GzipEnabled() bool       { return gzipEnabled }
+func AuditFile() string       { return auditFile }
+func AuditURL() string        { return auditURL }
 func ParseFlags() {
 	flag.Parse()
 	// Если флаг -d не был установлен явно, используем переменную окружения

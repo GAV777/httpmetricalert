@@ -15,8 +15,8 @@ func TestUpdateHandler(t *testing.T) {
 	t.Parallel()
 
 	// Создаём хранилище и хендлер
-	storage := storage.NewMemStorage()
-	handler := handlers.NewMetricsHandler(storage)
+	store := storage.NewMemStorage()
+	handler := handlers.NewMetricsHandler(store, nil)
 
 	// Создаём chi-роутер и монтируем маршрут
 	r := chi.NewRouter()
@@ -39,10 +39,10 @@ func TestUpdateHandler(t *testing.T) {
 func TestGetValueHandler(t *testing.T) {
 	t.Parallel()
 
-	storage := storage.NewMemStorage()
-	storage.SetGauge("test_gauge", 123.45)
+	store := storage.NewMemStorage()
+	store.SetGauge("test_gauge", 123.45)
 
-	handler := handlers.NewMetricsHandler(storage)
+	handler := handlers.NewMetricsHandler(store, nil)
 
 	r := chi.NewRouter()
 	r.Get("/value/{type}/{name}", handler.GetValueHandler)
@@ -63,11 +63,11 @@ func TestGetValueHandler(t *testing.T) {
 func TestListMetricsHandler(t *testing.T) {
 	t.Parallel()
 
-	storage := storage.NewMemStorage()
-	storage.SetGauge("test_gauge", 123.45)
-	storage.SetCounter("test_counter", 42)
+	store := storage.NewMemStorage()
+	store.SetGauge("test_gauge", 123.45)
+	store.SetCounter("test_counter", 42)
 
-	handler := handlers.NewMetricsHandler(storage)
+	handler := handlers.NewMetricsHandler(store, nil)
 
 	r := chi.NewRouter()
 	r.Get("/", handler.ListMetricsHandler)
