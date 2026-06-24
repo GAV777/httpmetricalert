@@ -47,6 +47,9 @@ func TestGetValueHandler(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get("/value/{type}/{name}", handler.GetValueHandler)
 
+	r := chi.NewRouter()
+	r.Get("/value/{type}/{name}", handler.GetValueHandler)
+
 	req := httptest.NewRequest("GET", "/value/gauge/test_gauge", nil)
 	rec := httptest.NewRecorder()
 
@@ -68,6 +71,9 @@ func TestListMetricsHandler(t *testing.T) {
 	store.SetCounter("test_counter", 42)
 
 	handler := handlers.NewMetricsHandler(store, nil)
+
+	r := chi.NewRouter()
+	r.Get("/", handler.ListMetricsHandler)
 
 	r := chi.NewRouter()
 	r.Get("/", handler.ListMetricsHandler)
