@@ -5,13 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"log"
-	"strings"
 
 	"github.com/GAV777/httpmetricalert/internal/migration"
 	"github.com/GAV777/httpmetricalert/internal/model"
 	"github.com/GAV777/httpmetricalert/pkg/retry"
 	"github.com/jackc/pgerrcode"
 
+	"github.com/lib/pq"
 	_ "github.com/lib/pq"
 )
 
@@ -293,8 +293,6 @@ func (p *PostgresStorage) UpdateBatch(metrics []model.Metrics) error {
 
 // isUniqueViolation checks if the error is a PostgreSQL unique constraint violation
 func isUniqueViolation(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), pgerrcode.UniqueViolation)
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == pgerrcode.UniqueViolation
 }

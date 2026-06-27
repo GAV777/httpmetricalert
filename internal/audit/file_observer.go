@@ -9,14 +9,21 @@ import (
 // FileObserver — наблюдатель, записывающий события аудита в файл
 type FileObserver struct {
 	filepath string
+	f        *os.File
 	mu       sync.Mutex
 }
 
-// NewFileObserver создаёт наблюдателя для записи в файл
-func NewFileObserver(filepath string) *FileObserver {
+// NewFileObserver создаёт наблюдателя для записи в файл.
+// Файл открывается один раз при создании наблюдателя.
+func NewFileObserver(filepath string) (*FileObserver, error) {
+	f, err := os.OpenFile(filepath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, err
+	}
 	return &FileObserver{
 		filepath: filepath,
-	}
+		f:        f,
+	}, nil
 }
 
 // Notify записывает событие аудита в конец файла (JSON на новой строке)
@@ -29,18 +36,11 @@ func (o *FileObserver) Notify(event AuditEvent) error {
 		return err
 	}
 
-	// Открываем файл в режиме append, создаём при необходимости
-	f, err := os.OpenFile(o.filepath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	_, err = f.Write(append(data, '\n'))
+	_, err = o.f.Write(append(data, '\n'))
 	return err
 }
 
-// Close для FileObserver не требует действий
+// Close закрывает файловый дескриптор
 func (o *FileObserver) Close() error {
-	return nil
+	return o.f.Close()
 }

@@ -3,7 +3,6 @@ package audit
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -13,7 +12,11 @@ import (
 func BenchmarkFileObserver_Notify(b *testing.B) {
 	tmpDir := b.TempDir()
 	path := filepath.Join(tmpDir, "audit.log")
-	obs := NewFileObserver(path)
+	obs, err := NewFileObserver(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer obs.Close()
 
 	event := AuditEvent{
 		Timestamp: 12345678,
@@ -54,7 +57,12 @@ func BenchmarkNotifier_Notify_Single(b *testing.B) {
 	path := filepath.Join(tmpDir, "audit.log")
 
 	n := NewNotifier()
-	n.AddObserver(NewFileObserver(path))
+	obs, err := NewFileObserver(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer obs.Close()
+	n.AddObserver(obs)
 
 	event := AuditEvent{
 		Timestamp: 12345678,
@@ -79,7 +87,12 @@ func BenchmarkNotifier_Notify_Multiple(b *testing.B) {
 	defer server.Close()
 
 	n := NewNotifier()
-	n.AddObserver(NewFileObserver(path))
+	obs, err := NewFileObserver(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer obs.Close()
+	n.AddObserver(obs)
 	n.AddObserver(NewHTTPObserver(server.URL))
 
 	event := AuditEvent{
@@ -113,7 +126,12 @@ func BenchmarkNotifier_Notify_LargeBatch(b *testing.B) {
 	tmpDir := b.TempDir()
 	path := filepath.Join(tmpDir, "audit.log")
 	n := NewNotifier()
-	n.AddObserver(NewFileObserver(path))
+	obs, err := NewFileObserver(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer obs.Close()
+	n.AddObserver(obs)
 
 	// Создаём событие с большим количеством метрик
 	metrics := make([]string, 100)
@@ -134,15 +152,15 @@ func BenchmarkNotifier_Notify_LargeBatch(b *testing.B) {
 }
 
 func BenchmarkFileObserver_Notify_Append_Overhead(b *testing.B) {
-	// Измеряем накладные расходы на открытие/закрытие файла
+	// Измеряем накладные расходы на запись в открытый файл
 	tmpDir := b.TempDir()
 	path := filepath.Join(tmpDir, "audit.log")
 
-	// Создаём файл заранее
-	f, _ := os.Create(path)
-	f.Close()
-
-	obs := NewFileObserver(path)
+	obs, err := NewFileObserver(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer obs.Close()
 
 	event := AuditEvent{
 		Timestamp: 12345678,

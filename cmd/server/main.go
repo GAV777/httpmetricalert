@@ -18,7 +18,9 @@ func main() {
 
 	config.ParseFlags()
 
-	addr := config.GetServerAddress()
+	addr := config.ServerAddress()
+	config.ValidateServerAddress()
+
 	store := storage.NewStorage()
 
 	// Создаём нотификатор аудита
@@ -37,8 +39,13 @@ func setupAuditNotifier() *audit.Notifier {
 	notifier := audit.NewNotifier()
 
 	if file := config.AuditFile(); file != "" {
-		notifier.AddObserver(audit.NewFileObserver(file))
-		log.Printf("Audit file observer enabled: %s", file)
+		obs, err := audit.NewFileObserver(file)
+		if err != nil {
+			log.Printf("Failed to create file observer for %s: %v", file, err)
+		} else {
+			notifier.AddObserver(obs)
+			log.Printf("Audit file observer enabled: %s", file)
+		}
 	}
 
 	if url := config.AuditURL(); url != "" {

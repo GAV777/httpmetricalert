@@ -16,10 +16,18 @@ func init() {
 	flag.StringVar(&secretKey, "k", key, "секретный ключ для SHA256 хеширования")
 }
 
-// GetServerAddress возвращает адрес сервера, очищенный от протокола.
-func GetServerAddress() string {
+// ServerAddress возвращает адрес сервера, очищенный от протокола.
+// Не имеет side effects — безопасен для вызова в любом контексте.
+func ServerAddress() string {
 	cleanAddr := strings.TrimPrefix(serverAddress, "http://")
 	cleanAddr = strings.TrimPrefix(cleanAddr, "https://")
+	return cleanAddr
+}
+
+// ValidateServerAddress проверяет корректность адреса и наличие неизвестных аргументов.
+// Должен вызываться после flag.Parse(). При ошибках вызывает log.Fatal.
+func ValidateServerAddress() {
+	cleanAddr := ServerAddress()
 
 	if cleanAddr == "" {
 		log.Fatal("Invalid address: ADDRESS cannot be empty")
@@ -29,13 +37,10 @@ func GetServerAddress() string {
 		log.Fatal("Invalid address format: expected host:port or :port")
 	}
 
-	// Проверяем неизвестные аргументы после парсинга всех флагов
 	remainingArgs := flag.Args()
 	if len(remainingArgs) > 0 {
 		log.Fatalf("неизвестные аргументы командной строки: %v", remainingArgs)
 	}
-
-	return cleanAddr
 }
 
 // GetSecretKey возвращает секретный ключ для хеширования

@@ -12,12 +12,15 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"os/signal"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/GAV777/httpmetricalert/internal/agent"
 	"github.com/GAV777/httpmetricalert/internal/model"
 	"github.com/GAV777/httpmetricalert/pkg/hash"
 	"github.com/GAV777/httpmetricalert/pkg/retry"
@@ -65,61 +68,8 @@ func parseIntOrPanic(s, context string) int {
 	panic("unreachable")
 }
 
-// MetricsStore — потокобезопасное хранилище метрик
-type MetricsStore struct {
-	gauges   map[string]float64
-	counters map[string]int64
-	mu       sync.RWMutex
-}
-
-func NewMetricsStore() *MetricsStore {
-	return &MetricsStore{
-		gauges:   make(map[string]float64),
-		counters: make(map[string]int64),
-	}
-}
-
-func (s *MetricsStore) SetGauge(name string, value float64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.gauges[name] = value
-}
-
-func (s *MetricsStore) IncrCounter(name string, value int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.counters[name] += value
-}
-
-func (s *MetricsStore) Snapshot() ([]model.Metrics, []model.Metrics) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var gauges []model.Metrics
-	for name, value := range s.gauges {
-		v := value
-		gauges = append(gauges, model.Metrics{
-			ID:    name,
-			MType: "gauge",
-			Value: &v,
-		})
-	}
-
-	var counters []model.Metrics
-	for name, value := range s.counters {
-		v := value
-		counters = append(counters, model.Metrics{
-			ID:    name,
-			MType: "counter",
-			Delta: &v,
-		})
-	}
-
-	return gauges, counters
-}
-
 // runtimeCollector собирает метрики runtime
-func runtimeCollector(store *MetricsStore, interval time.Duration, stopCh <-chan struct{}) {
+func runtimeCollector(store *agent.Store, interval time.Duration, stopCh <-chan struct{}) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -166,7 +116,7 @@ func runtimeCollector(store *MetricsStore, interval time.Duration, stopCh <-chan
 }
 
 // gopsutilCollector собирает системные метрики
-func gopsutilCollector(store *MetricsStore, interval time.Duration, stopCh <-chan struct{}) {
+func gopsutilCollector(store *agent.Store, interval time.Duration, stopCh <-chan struct{}) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -339,7 +289,7 @@ func (wp *workerPool) Stop() {
 }
 
 // sender — отправляет метрики каждые reportInterval
-func sender(store *MetricsStore, wp *workerPool, interval time.Duration, stopCh <-chan struct{}) {
+func sender(store *agent.Store, wp *workerPool, interval time.Duration, stopCh <-chan struct{}) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -384,7 +334,7 @@ func main() {
 	fmt.Printf("Starting agent with server address: %s\n", serverAddress)
 	fmt.Printf("Report interval: %v, Poll interval: %v, Rate limit: %d\n", reportDuration, pollDuration, rateLimit)
 
-	store := NewMetricsStore()
+	store := agent.NewStore()
 	client := &http.Client{}
 
 	// Запускаем worker pool
@@ -401,6 +351,13 @@ func main() {
 	// Запускаем отправителя
 	go sender(store, wp, reportDuration, stopCollect)
 
-	// Работаем бесконечно (остановка по сигналу SIGINT/SIGTERM)
-	<-make(chan struct{})
+	// Ждём сигнал завершения
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+
+	fmt.Println("\nShutting down agent...")
+	close(stopCollect)
+	wp.Stop()
+	fmt.Println("Agent stopped gracefully")
 }

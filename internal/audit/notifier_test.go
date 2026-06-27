@@ -62,9 +62,13 @@ func TestFileObserver_Notify(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	filepath := filepath.Join(tmpDir, "audit.log")
+	fpath := filepath.Join(tmpDir, "audit.log")
 
-	obs := NewFileObserver(filepath)
+	obs, err := NewFileObserver(fpath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer obs.Close()
 
 	event := AuditEvent{
 		Timestamp: 12345678,
@@ -77,7 +81,7 @@ func TestFileObserver_Notify(t *testing.T) {
 	}
 
 	// Проверяем что файл создан и содержит JSON
-	data, err := os.ReadFile(filepath)
+	data, err := os.ReadFile(fpath)
 	if err != nil {
 		t.Fatalf("Failed to read file: %v", err)
 	}
@@ -96,15 +100,19 @@ func TestFileObserver_Append(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	filepath := filepath.Join(tmpDir, "audit.log")
+	fpath := filepath.Join(tmpDir, "audit.log")
 
-	obs := NewFileObserver(filepath)
+	obs, err := NewFileObserver(fpath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer obs.Close()
 
 	// Записываем два события
 	obs.Notify(AuditEvent{Timestamp: 1, Metrics: []string{"A"}, IPAddress: "1.1.1.1"})
 	obs.Notify(AuditEvent{Timestamp: 2, Metrics: []string{"B"}, IPAddress: "2.2.2.2"})
 
-	data, err := os.ReadFile(filepath)
+	data, err := os.ReadFile(fpath)
 	if err != nil {
 		t.Fatalf("Failed to read file: %v", err)
 	}
