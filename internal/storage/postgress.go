@@ -11,8 +11,7 @@ import (
 	"github.com/GAV777/httpmetricalert/pkg/retry"
 	"github.com/jackc/pgerrcode"
 
-	"github.com/lib/pq"
-	_ "github.com/lib/pq"
+	pq "github.com/lib/pq"
 )
 
 // ErrNotFound возвращается, когда запрашиваемая метрика не найдена в БД.
