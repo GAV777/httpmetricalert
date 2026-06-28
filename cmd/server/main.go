@@ -11,7 +11,15 @@ import (
 	"github.com/rs/zerolog"
 )
 
+var (
+	buildVersion = "N/A"
+	buildDate    = "N/A"
+	buildCommit  = "N/A"
+)
+
 func main() {
+	printBuildInfo()
+
 	// Инициализация логгера
 	zerolog.TimeFieldFormat = "2006-01-02T15:04:05Z07:00"
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
@@ -58,4 +66,10 @@ func setupAuditNotifier() *audit.Notifier {
 	}
 
 	return notifier
+}
+
+func printBuildInfo() {
+	log.Printf("Build version: %s\n", buildVersion)
+	log.Printf("Build date: %s\n", buildDate)
+	log.Printf("Build commit: %s\n", buildCommit)
 }

@@ -29,6 +29,12 @@ import (
 )
 
 var (
+	buildVersion = "N/A"
+	buildDate    = "N/A"
+	buildCommit  = "N/A"
+)
+
+var (
 	serverAddress  string
 	reportInterval int // в секундах
 	pollInterval   int // в секундах
@@ -322,6 +328,8 @@ func sender(store *agent.Store, wp *workerPool, interval time.Duration, stopCh <
 }
 
 func main() {
+	printBuildInfo()
+
 	flag.Parse()
 
 	reportDuration := time.Duration(reportInterval) * time.Second
@@ -360,4 +368,10 @@ func main() {
 	close(stopCollect)
 	wp.Stop()
 	fmt.Println("Agent stopped gracefully")
+}
+
+func printBuildInfo() {
+	fmt.Printf("Build version: %s\n", buildVersion)
+	fmt.Printf("Build date: %s\n", buildDate)
+	fmt.Printf("Build commit: %s\n", buildCommit)
 }
