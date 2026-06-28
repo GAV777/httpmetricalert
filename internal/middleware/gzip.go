@@ -1,3 +1,8 @@
+// Package middleware предоставляет HTTP-middleware для сервера.
+//
+// Включает:
+//   - GzipMiddleware — сжатие ответов и распаковка запросов
+//   - HashMiddleware — HMAC-SHA256 подпись ответов
 package middleware
 
 import (

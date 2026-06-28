@@ -1,3 +1,11 @@
+// Package storage предоставляет хранилища для метрик.
+//
+// Поддерживает три типа хранилищ:
+//   - InMemoryStorage — хранение в памяти
+//   - FileStorage — сохранение в JSON-файл
+//   - PostgresStorage — хранение в PostgreSQL
+//
+// NewStorage создаёт хранилище в зависимости от конфигурации.
 package storage
 
 import (
