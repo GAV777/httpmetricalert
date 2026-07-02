@@ -10,6 +10,7 @@ import (
 	"errors"
 	"log"
 	"net"
+	"strings"
 	"syscall"
 	"time"
 
@@ -89,14 +90,12 @@ func isRetriable(err error) bool {
 
 	// Generic "connection refused" / "connection reset" messages
 	errMsg := err.Error()
-	if containsAny(errMsg, []string{
-		"connection refused",
-		"connection reset",
-		"no connection",
-		"broken pipe",
-		"i/o timeout",
-		"EOF",
-	}) {
+	if strings.Contains(errMsg, "connection refused") ||
+		strings.Contains(errMsg, "connection reset") ||
+		strings.Contains(errMsg, "no connection") ||
+		strings.Contains(errMsg, "broken pipe") ||
+		strings.Contains(errMsg, "i/o timeout") ||
+		strings.Contains(errMsg, "EOF") {
 		return true
 	}
 
@@ -136,30 +135,12 @@ func isPostgresConnectionError(err error) bool {
 
 	// We check the error string for pgerrcode constants as a fallback
 	errMsg := err.Error()
-	connectionCodes := []string{
-		pgerrcode.ConnectionException,
-		pgerrcode.ConnectionDoesNotExist,
-		pgerrcode.ConnectionFailure,
-		pgerrcode.SQLClientUnableToEstablishSQLConnection,
-		pgerrcode.SQLServerRejectedEstablishmentOfSQLConnection,
-	}
-	for _, code := range connectionCodes {
-		if containsAny(errMsg, []string{code}) {
-			return true
-		}
-	}
-	return false
-}
-
-func containsAny(s string, substrings []string) bool {
-	for _, sub := range substrings {
-		if len(s) >= len(sub) {
-			for i := 0; i <= len(s)-len(sub); i++ {
-				if s[i:i+len(sub)] == sub {
-					return true
-				}
-			}
-		}
+	if strings.Contains(errMsg, pgerrcode.ConnectionException) ||
+		strings.Contains(errMsg, pgerrcode.ConnectionDoesNotExist) ||
+		strings.Contains(errMsg, pgerrcode.ConnectionFailure) ||
+		strings.Contains(errMsg, pgerrcode.SQLClientUnableToEstablishSQLConnection) ||
+		strings.Contains(errMsg, pgerrcode.SQLServerRejectedEstablishmentOfSQLConnection) {
+		return true
 	}
 	return false
 }

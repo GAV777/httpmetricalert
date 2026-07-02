@@ -1,21 +1,22 @@
 package main
 
 import (
-	"github.com/GAV777/httpmetricalert/internal/config"
-	"github.com/GAV777/httpmetricalert/internal/handlers"
-	"github.com/GAV777/httpmetricalert/internal/middleware"
+	"crypto/rsa"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/GAV777/httpmetricalert/internal/config"
+	"github.com/GAV777/httpmetricalert/internal/handlers"
+	"github.com/GAV777/httpmetricalert/internal/middleware"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
 )
 
-func setupRouter(handler *handlers.MetricsHandler) http.Handler {
+func setupRouter(handler *handlers.MetricsHandler, privKey *rsa.PrivateKey) http.Handler {
 	r := chi.NewRouter()
 
 	// Логирование
@@ -26,6 +27,9 @@ func setupRouter(handler *handlers.MetricsHandler) http.Handler {
 	// Защита от //
 	r.Use(noDoubleSlashes)
 	r.Use(chimiddleware.StripSlashes)
+
+	// CryptoMiddleware — расшифровка запросов (до gzip)
+	r.Use(middleware.CryptoMiddleware(privKey))
 
 	// Подключаем gzip middleware
 	r.Use(middleware.GzipMiddleware)

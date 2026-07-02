@@ -1,15 +1,15 @@
-// Package noosexit предоставляет анализатор, который запрещает
-// прямой вызов os.Exit в функции main пакета main.
+// Package noosexit предоставляет анализатор, который проверяет корректность
+// завершения программы в пакете main.
 //
-// Анализатор проверяет AST функцию main пакета main и ищет
-// любые вызовы os.Exit. Если такой вызов обнаружен, анализатор
-// выдаёт предупреждение, так как os.Exit прерывает выполнение
-// программы без выполнения defer-функций, что может привести
-// к утечке ресурсов или незавершённым операциям.
+// Анализатор выявляет три категории проблем:
+//   - Вызов os.Exit в функции main — прерывает выполнение без defer
+//   - Вызов panic в функции main — аварийное завершение без обработки
+//   - Вызов os.Exit или log.Fatal вне функции main — некорректное размещение
 package noosexit
 
 import (
 	"go/ast"
+	"go/token"
 	"go/types"
 	"strings"
 
@@ -19,16 +19,16 @@ import (
 )
 
 // Doc описывает назначение анализатора для multichecker.
-const Doc = `noosexit запрещает прямой вызов os.Exit в функции main пакета main.
+const Doc = `noosexit проверяет корректность завершения программы в пакете main.
 
 Вызов os.Exit прерывает выполнение программы немедленно, не выполняя
-defer-функции. Это может привести к:
-- утечке ресурсов (файлы, соединения с БД не закрываются);
-- незавершённым транзакциям;
-- потере данных из буферов логгера.
+defer-функции. panic в main также приводит к аварийному завершению
+без graceful shutdown. Вызов os.Exit или log.Fatal вне функции main
+нарушает инкапсуляцию и усложняет тестирование.
 
-Вместо os.Exit рекомендуется использовать возврат ошибки из main
-или log.Fatal, который корректно завершает программу после flush логгера.`
+Рекомендации:
+- в main: используйте возврат ошибки вместо os.Exit/panic
+- вне main: возвращайте error вместо вызова log.Fatal/os.Exit`
 
 // Analyzer предоставляет конфигурацию анализатора noosexit.
 var Analyzer = &analysis.Analyzer{
@@ -53,7 +53,9 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
-	// Ищем функцию main
+	var mainFuncPos token.Pos
+
+	// Первый проход: находим функцию main и проверяем os.Exit/panic внутри неё
 	nodeFilter := []ast.Node{(*ast.FuncDecl)(nil)}
 	insp.Preorder(nodeFilter, func(node ast.Node) {
 		funcDecl := node.(*ast.FuncDecl)
@@ -63,39 +65,103 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
-		// Проверяем, что это не метод (у FuncDecl нет Recv для main)
+		// Проверяем, что это не метод
 		if funcDecl.Recv != nil && len(funcDecl.Recv.List) > 0 {
 			return
 		}
 
-		// Обходим тело функции main в поисках os.Exit
+		mainFuncPos = funcDecl.Pos()
+
+		// Обходим тело функции main в поисках os.Exit и panic
 		ast.Inspect(funcDecl.Body, func(n ast.Node) bool {
 			callExpr, ok := n.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
 
-			// Проверяем, что это вызов os.Exit
-			if selExpr, ok := callExpr.Fun.(*ast.SelectorExpr); ok {
-				// Проверяем, что X — это идентификатор "os"
-				if ident, ok := selExpr.X.(*ast.Ident); ok && ident.Name == "os" {
-					// Проверяем, что Selector — это "Exit"
-					if selExpr.Sel.Name == "Exit" {
-						// Дополнительно проверяем через types.Info, что это действительно os.Exit
-						if selObj := pass.TypesInfo.ObjectOf(selExpr.Sel); selObj != nil {
-							if pkgName, ok := pass.TypesInfo.ObjectOf(ident).(*types.PkgName); ok {
-								if pkgName.Imported().Path() == "os" {
-									pass.Reportf(callExpr.Pos(),
-										"не используйте os.Exit в функции main — используйте log.Fatal или возврат ошибки")
-								}
-							}
-						}
-					}
-				}
+			// Проверяем os.Exit
+			if isCallTo(callExpr, pass, "os", "Exit") {
+				pass.Reportf(callExpr.Pos(),
+					"не используйте os.Exit в функции main — используйте log.Fatal или возврат ошибки")
 			}
+
+			// Проверяем panic
+			if isCallTo(callExpr, pass, "", "panic") {
+				pass.Reportf(callExpr.Pos(),
+					"не используйте panic в функции main — используйте возврат ошибки")
+			}
+
+			return true
+		})
+	})
+
+	// Второй проход: проверяем os.Exit и log.Fatal вне функции main
+	insp.Preorder(nodeFilter, func(node ast.Node) {
+		funcDecl := node.(*ast.FuncDecl)
+
+		// Пропускаем саму функцию main
+		if funcDecl.Name.Name == "main" && mainFuncPos != 0 {
+			if funcDecl.Pos() == mainFuncPos {
+				return
+			}
+		}
+
+		// Обходим тело функции в поисках os.Exit и log.Fatal
+		ast.Inspect(funcDecl.Body, func(n ast.Node) bool {
+			callExpr, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+
+			if isCallTo(callExpr, pass, "os", "Exit") {
+				pass.Reportf(callExpr.Pos(),
+					"не используйте os.Exit вне функции main — возвращайте ошибку")
+			}
+
+			if isCallTo(callExpr, pass, "log", "Fatal") ||
+				isCallTo(callExpr, pass, "log", "Fatalf") ||
+				isCallTo(callExpr, pass, "log", "Fatalln") {
+				pass.Reportf(callExpr.Pos(),
+					"не используйте log.Fatal вне функции main — возвращайте ошибку")
+			}
+
 			return true
 		})
 	})
 
 	return nil, nil
+}
+
+// isCallTo проверяет, является ли вызов обращением к pkg.Func
+func isCallTo(callExpr *ast.CallExpr, pass *analysis.Pass, pkg, fn string) bool {
+	selExpr, ok := callExpr.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+
+	ident, ok := selExpr.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+
+	if selExpr.Sel.Name != fn {
+		return false
+	}
+
+	if pkg == "" {
+		// builtin (panic) — достаточно имени
+		return ident.Name == ""
+	}
+
+	obj := pass.TypesInfo.ObjectOf(ident)
+	if obj == nil {
+		return false
+	}
+
+	pkgName, ok := obj.(*types.PkgName)
+	if !ok {
+		return false
+	}
+
+	return pkgName.Imported().Path() == pkg
 }

@@ -65,7 +65,7 @@ func TestSender(t *testing.T) {
 	stopCh := make(chan struct{})
 
 	// Запускаем отправитель
-	go sender(store, wp, 100*time.Millisecond, stopCh)
+	go sender(store, wp, 100*time.Millisecond, stopCh, nil)
 
 	// Ждём отправки
 	time.Sleep(250 * time.Millisecond)
@@ -93,7 +93,7 @@ func TestSendMetricWithGZIP(t *testing.T) {
 		Value: floatPtr(42.0),
 	}
 
-	err := sendMetric(server.Client(), server.URL, metric)
+	err := sendMetric(server.Client(), server.URL, metric, nil)
 	if err != nil {
 		t.Errorf("sendMetric failed: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestSendBatchWithGZIP(t *testing.T) {
 		{ID: "Metric2", MType: "counter", Delta: int64Ptr(5)},
 	}
 
-	err := sendBatch(server.Client(), server.URL, batch)
+	err := sendBatch(server.Client(), server.URL, batch, nil)
 	if err != nil {
 		t.Errorf("sendBatch failed: %v", err)
 	}

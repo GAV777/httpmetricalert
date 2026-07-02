@@ -21,6 +21,7 @@ var (
 	databaseDSN     string
 	auditFile       string
 	auditURL        string
+	cryptoKey       string
 )
 
 func init() {
@@ -30,6 +31,7 @@ func init() {
 	gzipStr := getEnvOrDefault("ENABLE_GZIP", "false")
 	aFile := getEnvOrDefault("AUDIT_FILE", "")
 	aURL := getEnvOrDefault("AUDIT_URL", "")
+	cKey := getEnvOrDefault("CRYPTO_KEY", "")
 
 	flag.IntVar(&storeInterval, "i", parseInt(interval), "Store interval in seconds (0 for sync)")
 	flag.StringVar(&fileStoragePath, "f", path, "File path to store metrics")
@@ -38,6 +40,7 @@ func init() {
 	flag.StringVar(&databaseDSN, "d", "", "Database DSN (PostgreSQL)")
 	flag.StringVar(&auditFile, "audit-file", aFile, "Path to audit log file (empty = disabled)")
 	flag.StringVar(&auditURL, "audit-url", aURL, "URL to send audit logs via POST (empty = disabled)")
+	flag.StringVar(&cryptoKey, "crypto-key", cKey, "Path to RSA private key file for request decryption")
 }
 
 func getEnvOrDefault(key, defaultValue string) string {
@@ -87,6 +90,9 @@ func AuditFile() string { return auditFile }
 
 // AuditURL возвращает URL для отправки логов аудита (пустая строка = аудит отключён).
 func AuditURL() string { return auditURL }
+
+// CryptoKey возвращает путь к файлу RSA-ключа (пустая строка = шифрование отключено).
+func CryptoKey() string { return cryptoKey }
 
 // ParseFlags разбирает флаги командной строки и переменные окружения.
 func ParseFlags() {

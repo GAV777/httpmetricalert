@@ -15,7 +15,7 @@ func TestSetupRouter(t *testing.T) {
 
 	store := storage.NewMemStorage()
 	handler := handlers.NewMetricsHandler(store, nil)
-	r := setupRouter(handler)
+	r := setupRouter(handler, nil)
 
 	// Проверяем что роутер не nil
 	if r == nil {
@@ -38,7 +38,7 @@ func TestSetupRouter_NotFound(t *testing.T) {
 
 	store := storage.NewMemStorage()
 	handler := handlers.NewMetricsHandler(store, nil)
-	r := setupRouter(handler)
+	r := setupRouter(handler, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/nonexistent", nil)
 	rec := httptest.NewRecorder()
@@ -54,7 +54,7 @@ func TestSetupRouter_DoubleSlashRejected(t *testing.T) {
 
 	store := storage.NewMemStorage()
 	handler := handlers.NewMetricsHandler(store, nil)
-	r := setupRouter(handler)
+	r := setupRouter(handler, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "//value/gauge/test", nil)
 	rec := httptest.NewRecorder()
@@ -116,7 +116,7 @@ func TestSetupRouter_PingEndpoint(t *testing.T) {
 
 	store := storage.NewMemStorage()
 	handler := handlers.NewMetricsHandler(store, nil)
-	r := setupRouter(handler)
+	r := setupRouter(handler, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
 	rec := httptest.NewRecorder()
@@ -135,7 +135,7 @@ func TestSetupRouter_UpdateBatch(t *testing.T) {
 
 	store := storage.NewMemStorage()
 	handler := handlers.NewMetricsHandler(store, nil)
-	r := setupRouter(handler)
+	r := setupRouter(handler, nil)
 
 	batch := `[{"id":"batch_g","type":"gauge","value":1.0},{"id":"batch_c","type":"counter","delta":5}]`
 	req := httptest.NewRequest(http.MethodPost, "/updates", strings.NewReader(batch))
@@ -161,7 +161,7 @@ func TestSetupRouter_UpdateJSON(t *testing.T) {
 
 	store := storage.NewMemStorage()
 	handler := handlers.NewMetricsHandler(store, nil)
-	r := setupRouter(handler)
+	r := setupRouter(handler, nil)
 
 	body := `{"id":"json_test","type":"gauge","value":99.9}`
 	req := httptest.NewRequest(http.MethodPost, "/update", strings.NewReader(body))
@@ -184,7 +184,7 @@ func TestSetupRouter_GetValueJSON(t *testing.T) {
 	store := storage.NewMemStorage()
 	store.SetGauge("get_json", 77.7)
 	handler := handlers.NewMetricsHandler(store, nil)
-	r := setupRouter(handler)
+	r := setupRouter(handler, nil)
 
 	body := `{"id":"get_json","type":"gauge"}`
 	req := httptest.NewRequest(http.MethodPost, "/value", strings.NewReader(body))

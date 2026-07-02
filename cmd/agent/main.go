@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -16,12 +17,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/GAV777/httpmetricalert/internal/agent"
 	"github.com/GAV777/httpmetricalert/internal/model"
+	"github.com/GAV777/httpmetricalert/pkg/crypto"
 	"github.com/GAV777/httpmetricalert/pkg/hash"
 	"github.com/GAV777/httpmetricalert/pkg/retry"
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -39,7 +40,8 @@ var (
 	reportInterval int // в секундах
 	pollInterval   int // в секундах
 	secretKey      string
-	rateLimit      int // максимальное кол-во одновременных запросов
+	rateLimit      int    // максимальное кол-во одновременных запросов
+	cryptoKeyPath  string // путь к файлу публичного ключа
 )
 
 func init() {
@@ -48,12 +50,14 @@ func init() {
 	pollStr := getEnvOrDefault("POLL_INTERVAL", "2")
 	key := getEnvOrDefault("KEY", "")
 	rateLimitStr := getEnvOrDefault("RATE_LIMIT", "1")
+	cKey := getEnvOrDefault("CRYPTO_KEY", "")
 
 	flag.StringVar(&serverAddress, "a", addr, "HTTP server address")
 	flag.IntVar(&reportInterval, "r", parseIntOrPanic(reportStr, "REPORT_INTERVAL"), "Report interval in seconds")
 	flag.IntVar(&pollInterval, "p", parseIntOrPanic(pollStr, "POLL_INTERVAL"), "Poll interval in seconds")
 	flag.StringVar(&secretKey, "k", key, "Secret key for SHA256 hashing")
 	flag.IntVar(&rateLimit, "l", parseIntOrPanic(rateLimitStr, "RATE_LIMIT"), "Max concurrent requests")
+	flag.StringVar(&cryptoKeyPath, "crypto-key", cKey, "Path to RSA public key file for request encryption")
 }
 
 func getEnvOrDefault(key, defaultValue string) string {
@@ -151,34 +155,51 @@ func gopsutilCollector(store *agent.Store, interval time.Duration, stopCh <-chan
 }
 
 // worker — отправляет одну метрику
-func sendMetric(client *http.Client, baseURL string, metric model.Metrics) error {
+func sendMetric(client *http.Client, baseURL string, metric model.Metrics, pubKey *rsa.PublicKey) error {
 	data, err := json.Marshal(metric)
 	if err != nil {
 		return fmt.Errorf("marshal metric %s: %w", metric.ID, err)
 	}
 
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	if _, err := gz.Write(data); err != nil {
+	var bodyData []byte
+	useCrypto := pubKey != nil
+
+	if useCrypto {
+		encrypted, err := crypto.Encrypt(pubKey, data)
+		if err != nil {
+			return fmt.Errorf("encrypt metric %s: %w", metric.ID, err)
+		}
+		bodyData = encrypted
+	} else {
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		if _, err := gz.Write(data); err != nil {
+			gz.Close()
+			return fmt.Errorf("compress metric %s: %w", metric.ID, err)
+		}
 		gz.Close()
-		return fmt.Errorf("compress metric %s: %w", metric.ID, err)
+		bodyData = buf.Bytes()
 	}
-	gz.Close()
 
 	url := fmt.Sprintf("%s/update", baseURL)
 
 	cfg := retry.DefaultConfig()
 	return retry.Do(context.Background(), cfg, func() error {
-		req, err := http.NewRequest("POST", url, bytes.NewReader(buf.Bytes()))
+		req, err := http.NewRequest("POST", url, bytes.NewReader(bodyData))
 		if err != nil {
 			return err
 		}
 
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Content-Encoding", "gzip")
+		if useCrypto {
+			req.Header.Set("Content-Type", "application/octet-stream")
+			req.Header.Set("X-Crypto", "rsa")
+		} else {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Encoding", "gzip")
+		}
 		req.Header.Set("Accept-Encoding", "gzip")
 
-		if secretKey != "" {
+		if secretKey != "" && !useCrypto {
 			h := hash.Sign(string(data), secretKey)
 			req.Header.Set("HashSHA256", h)
 		}
@@ -198,7 +219,7 @@ func sendMetric(client *http.Client, baseURL string, metric model.Metrics) error
 }
 
 // sendBatch отправляет батч метрик
-func sendBatch(client *http.Client, baseURL string, batch []model.Metrics) error {
+func sendBatch(client *http.Client, baseURL string, batch []model.Metrics, pubKey *rsa.PublicKey) error {
 	if len(batch) == 0 {
 		return nil
 	}
@@ -208,28 +229,45 @@ func sendBatch(client *http.Client, baseURL string, batch []model.Metrics) error
 		return fmt.Errorf("marshal batch: %w", err)
 	}
 
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	if _, err := gz.Write(data); err != nil {
+	var bodyData []byte
+	useCrypto := pubKey != nil
+
+	if useCrypto {
+		encrypted, err := crypto.Encrypt(pubKey, data)
+		if err != nil {
+			return fmt.Errorf("encrypt batch: %w", err)
+		}
+		bodyData = encrypted
+	} else {
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		if _, err := gz.Write(data); err != nil {
+			gz.Close()
+			return fmt.Errorf("compress batch: %w", err)
+		}
 		gz.Close()
-		return fmt.Errorf("compress batch: %w", err)
+		bodyData = buf.Bytes()
 	}
-	gz.Close()
 
 	url := fmt.Sprintf("%s/updates/", baseURL)
 
 	cfg := retry.DefaultConfig()
 	return retry.Do(context.Background(), cfg, func() error {
-		req, err := http.NewRequest("POST", url, bytes.NewReader(buf.Bytes()))
+		req, err := http.NewRequest("POST", url, bytes.NewReader(bodyData))
 		if err != nil {
 			return err
 		}
 
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Content-Encoding", "gzip")
+		if useCrypto {
+			req.Header.Set("Content-Type", "application/octet-stream")
+			req.Header.Set("X-Crypto", "rsa")
+		} else {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Encoding", "gzip")
+		}
 		req.Header.Set("Accept-Encoding", "gzip")
 
-		if secretKey != "" {
+		if secretKey != "" && !useCrypto {
 			h := hash.Sign(string(data), secretKey)
 			req.Header.Set("HashSHA256", h)
 		}
@@ -248,54 +286,8 @@ func sendBatch(client *http.Client, baseURL string, batch []model.Metrics) error
 	})
 }
 
-// workerPool — пул воркеров для отправки метрик
-type workerPool struct {
-	tasks   chan func()
-	client  *http.Client
-	baseURL string
-	size    int
-	wg      sync.WaitGroup
-	stopCh  chan struct{}
-}
-
-func newWorkerPool(size int, client *http.Client, baseURL string) *workerPool {
-	return &workerPool{
-		tasks:   make(chan func(), size*2),
-		client:  client,
-		baseURL: baseURL,
-		size:    size,
-		stopCh:  make(chan struct{}),
-	}
-}
-
-func (wp *workerPool) Start() {
-	for i := 0; i < wp.size; i++ {
-		wp.wg.Add(1)
-		go func() {
-			defer wp.wg.Done()
-			for {
-				select {
-				case task := <-wp.tasks:
-					task()
-				case <-wp.stopCh:
-					return
-				}
-			}
-		}()
-	}
-}
-
-func (wp *workerPool) Submit(task func()) {
-	wp.tasks <- task
-}
-
-func (wp *workerPool) Stop() {
-	close(wp.stopCh)
-	wp.wg.Wait()
-}
-
 // sender — отправляет метрики каждые reportInterval
-func sender(store *agent.Store, wp *workerPool, interval time.Duration, stopCh <-chan struct{}) {
+func sender(store *agent.Store, wp *workerPool, interval time.Duration, stopCh <-chan struct{}, pubKey *rsa.PublicKey) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -317,7 +309,7 @@ func sender(store *agent.Store, wp *workerPool, interval time.Duration, stopCh <
 
 			fmt.Printf("Sending batch with %d metrics\n", len(batch))
 			wp.Submit(func() {
-				if err := sendBatch(wp.client, wp.baseURL, batch); err != nil {
+				if err := sendBatch(wp.client, wp.baseURL, batch, pubKey); err != nil {
 					fmt.Printf("Failed to send batch: %v\n", err)
 				} else {
 					fmt.Printf("Successfully sent batch with %d metrics\n", len(batch))
@@ -342,6 +334,17 @@ func main() {
 	fmt.Printf("Starting agent with server address: %s\n", serverAddress)
 	fmt.Printf("Report interval: %v, Poll interval: %v, Rate limit: %d\n", reportDuration, pollDuration, rateLimit)
 
+	// Загружаем публичный ключ, если указан
+	var pubKey *rsa.PublicKey
+	if cryptoKeyPath != "" {
+		var err error
+		pubKey, err = crypto.LoadPublicKey(cryptoKeyPath)
+		if err != nil {
+			log.Fatalf("Failed to load public key: %v", err)
+		}
+		fmt.Println("RSA encryption enabled")
+	}
+
 	store := agent.NewStore()
 	client := &http.Client{}
 
@@ -357,7 +360,7 @@ func main() {
 	go gopsutilCollector(store, pollDuration, stopCollect)
 
 	// Запускаем отправителя
-	go sender(store, wp, reportDuration, stopCollect)
+	go sender(store, wp, reportDuration, stopCollect, pubKey)
 
 	// Ждём сигнал завершения
 	sigCh := make(chan os.Signal, 1)

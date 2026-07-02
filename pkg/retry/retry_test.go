@@ -158,23 +158,6 @@ func TestIsRetriable_NetworkErrors(t *testing.T) {
 	}
 }
 
-func TestContainsAny(t *testing.T) {
-	t.Parallel()
-
-	if !containsAny("hello world", []string{"world"}) {
-		t.Error("containsAny should find 'world'")
-	}
-	if containsAny("hello world", []string{"xyz"}) {
-		t.Error("containsAny should not find 'xyz'")
-	}
-	if containsAny("", []string{"test"}) {
-		t.Error("containsAny on empty string should return false")
-	}
-	if !containsAny("test", []string{"test"}) {
-		t.Error("containsAny should find exact match")
-	}
-}
-
 func TestDefaultConfig(t *testing.T) {
 	t.Parallel()
 

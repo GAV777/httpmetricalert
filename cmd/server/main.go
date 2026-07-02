@@ -1,13 +1,15 @@
 package main
 
 import (
+	"crypto/rsa"
+	"log"
+	"net/http"
+
 	"github.com/GAV777/httpmetricalert/internal/audit"
 	"github.com/GAV777/httpmetricalert/internal/config"
 	"github.com/GAV777/httpmetricalert/internal/handlers"
 	"github.com/GAV777/httpmetricalert/internal/storage"
-	"log"
-	"net/http"
-
+	"github.com/GAV777/httpmetricalert/pkg/crypto"
 	"github.com/rs/zerolog"
 )
 
@@ -31,12 +33,23 @@ func main() {
 
 	store := storage.NewStorage()
 
+	// Загружаем приватный ключ, если указан
+	var privKey *rsa.PrivateKey
+	if cryptoKeyPath := config.CryptoKey(); cryptoKeyPath != "" {
+		var err error
+		privKey, err = crypto.LoadPrivateKey(cryptoKeyPath)
+		if err != nil {
+			log.Fatalf("Failed to load private key: %v", err)
+		}
+		log.Println("RSA decryption enabled")
+	}
+
 	// Создаём нотификатор аудита
 	notifier := setupAuditNotifier()
 
 	handler := handlers.NewMetricsHandler(store, notifier)
 
-	router := setupRouter(handler)
+	router := setupRouter(handler, privKey)
 
 	log.Printf("Starting server on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, router))

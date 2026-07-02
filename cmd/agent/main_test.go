@@ -36,7 +36,7 @@ func TestSendMetric_Gauge(t *testing.T) {
 		MType: "gauge",
 		Value: floatPtr(42.0),
 	}
-	err := sendMetric(client, server.URL, metric)
+	err := sendMetric(client, server.URL, metric, nil)
 	if err != nil {
 		t.Errorf("sendMetric error: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestSendMetric_Counter(t *testing.T) {
 		MType: "counter",
 		Delta: int64Ptr(5),
 	}
-	err := sendMetric(client, server.URL, metric)
+	err := sendMetric(client, server.URL, metric, nil)
 	if err != nil {
 		t.Errorf("sendMetric error: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestSendBatch(t *testing.T) {
 		{ID: "gauge1", MType: "gauge", Value: floatPtr(1.0)},
 		{ID: "counter1", MType: "counter", Delta: int64Ptr(5)},
 	}
-	err := sendBatch(client, server.URL, batch)
+	err := sendBatch(client, server.URL, batch, nil)
 	if err != nil {
 		t.Errorf("sendBatch error: %v", err)
 	}
