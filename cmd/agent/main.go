@@ -1,143 +1,348 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"crypto/rsa"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"log"
 	"math/rand"
 	"net/http"
+	"os"
+	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
-	"sync"
+	"syscall"
 	"time"
+
+	"github.com/GAV777/httpmetricalert/internal/agent"
+	"github.com/GAV777/httpmetricalert/internal/model"
+	"github.com/GAV777/httpmetricalert/pkg/crypto"
+	"github.com/GAV777/httpmetricalert/pkg/hash"
+	"github.com/GAV777/httpmetricalert/pkg/retry"
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/mem"
 )
 
-const (
-	contentType = "text/plain"
+var (
+	buildVersion = "N/A"
+	buildDate    = "N/A"
+	buildCommit  = "N/A"
 )
 
 var (
 	serverAddress  string
 	reportInterval int // в секундах
 	pollInterval   int // в секундах
+	secretKey      string
+	rateLimit      int    // максимальное кол-во одновременных запросов
+	cryptoKeyPath  string // путь к файлу публичного ключа
 )
 
 func init() {
-	flag.StringVar(&serverAddress, "a", "localhost:8080", "HTTP server address (default: localhost:8080)")
-	flag.IntVar(&reportInterval, "r", 10, "Report interval in seconds (default: 10)")
-	flag.IntVar(&pollInterval, "p", 2, "Poll interval in seconds (default: 2)")
+	addr := getEnvOrDefault("ADDRESS", "localhost:8080")
+	reportStr := getEnvOrDefault("REPORT_INTERVAL", "10")
+	pollStr := getEnvOrDefault("POLL_INTERVAL", "2")
+	key := getEnvOrDefault("KEY", "")
+	rateLimitStr := getEnvOrDefault("RATE_LIMIT", "1")
+	cKey := getEnvOrDefault("CRYPTO_KEY", "")
+
+	flag.StringVar(&serverAddress, "a", addr, "HTTP server address")
+	flag.IntVar(&reportInterval, "r", parseIntOrPanic(reportStr, "REPORT_INTERVAL"), "Report interval in seconds")
+	flag.IntVar(&pollInterval, "p", parseIntOrPanic(pollStr, "POLL_INTERVAL"), "Poll interval in seconds")
+	flag.StringVar(&secretKey, "k", key, "Secret key for SHA256 hashing")
+	flag.IntVar(&rateLimit, "l", parseIntOrPanic(rateLimitStr, "RATE_LIMIT"), "Max concurrent requests")
+	flag.StringVar(&cryptoKeyPath, "crypto-key", cKey, "Path to RSA public key file for request encryption")
 }
 
-// Metrics хранит метрики с мьютексом для потокобезопасности
-type Metrics struct {
-	Gauge   map[string]float64
-	Counter map[string]int64
-	mu      sync.RWMutex // защита чтения/записи
+func getEnvOrDefault(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return defaultValue
 }
 
-func NewMetrics() *Metrics {
-	return &Metrics{
-		Gauge:   make(map[string]float64),
-		Counter: make(map[string]int64),
+func parseIntOrPanic(s, context string) int {
+	if n, err := strconv.Atoi(s); err == nil {
+		if n <= 0 {
+			log.Fatalf("%s must be positive, got %d", context, n)
+		}
+		return n
+	}
+	log.Fatalf("Invalid value for %s: %s (must be integer)", context, s)
+	panic("unreachable")
+}
+
+// runtimeCollector собирает метрики runtime
+func runtimeCollector(store *agent.Store, interval time.Duration, stopCh <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+
+			store.SetGauge("Alloc", float64(m.Alloc))
+			store.SetGauge("BuckHashSys", float64(m.BuckHashSys))
+			store.SetGauge("Frees", float64(m.Frees))
+			store.SetGauge("GCCPUFraction", m.GCCPUFraction)
+			store.SetGauge("GCSys", float64(m.GCSys))
+			store.SetGauge("HeapAlloc", float64(m.HeapAlloc))
+			store.SetGauge("HeapIdle", float64(m.HeapIdle))
+			store.SetGauge("HeapInuse", float64(m.HeapInuse))
+			store.SetGauge("HeapObjects", float64(m.HeapObjects))
+			store.SetGauge("HeapReleased", float64(m.HeapReleased))
+			store.SetGauge("HeapSys", float64(m.HeapSys))
+			store.SetGauge("LastGC", float64(m.LastGC))
+			store.SetGauge("Lookups", float64(m.Lookups))
+			store.SetGauge("MCacheInuse", float64(m.MCacheInuse))
+			store.SetGauge("MCacheSys", float64(m.MCacheSys))
+			store.SetGauge("MSpanInuse", float64(m.MSpanInuse))
+			store.SetGauge("MSpanSys", float64(m.MSpanSys))
+			store.SetGauge("Mallocs", float64(m.Mallocs))
+			store.SetGauge("NextGC", float64(m.NextGC))
+			store.SetGauge("NumForcedGC", float64(m.NumForcedGC))
+			store.SetGauge("NumGC", float64(m.NumGC))
+			store.SetGauge("OtherSys", float64(m.OtherSys))
+			store.SetGauge("PauseTotalNs", float64(m.PauseTotalNs))
+			store.SetGauge("StackInuse", float64(m.StackInuse))
+			store.SetGauge("StackSys", float64(m.StackSys))
+			store.SetGauge("Sys", float64(m.Sys))
+			store.SetGauge("TotalAlloc", float64(m.TotalAlloc))
+
+			store.SetGauge("RandomValue", rand.Float64())
+			store.IncrCounter("PollCount", 1)
+		}
 	}
 }
 
-// Collect собирает метрики из runtime — требует блокировки на запись
-func (m *Metrics) Collect() {
-	var memStats runtime.MemStats
-	runtime.ReadMemStats(&memStats)
+// gopsutilCollector собирает системные метрики
+func gopsutilCollector(store *agent.Store, interval time.Duration, stopCh <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+			// Память
+			v, err := mem.VirtualMemory()
+			if err == nil {
+				store.SetGauge("TotalMemory", float64(v.Total))
+				store.SetGauge("FreeMemory", float64(v.Free))
+			}
 
-	m.Gauge["Alloc"] = float64(memStats.Alloc)
-	m.Gauge["BuckHashSys"] = float64(memStats.BuckHashSys)
-	m.Gauge["Frees"] = float64(memStats.Frees)
-	m.Gauge["GCCPUFraction"] = memStats.GCCPUFraction
-	m.Gauge["GCSys"] = float64(memStats.GCSys)
-	m.Gauge["HeapAlloc"] = float64(memStats.HeapAlloc)
-	m.Gauge["HeapIdle"] = float64(memStats.HeapIdle)
-	m.Gauge["HeapInuse"] = float64(memStats.HeapInuse)
-	m.Gauge["HeapObjects"] = float64(memStats.HeapObjects)
-	m.Gauge["HeapReleased"] = float64(memStats.HeapReleased)
-	m.Gauge["HeapSys"] = float64(memStats.HeapSys)
-	m.Gauge["LastGC"] = float64(memStats.LastGC)
-	m.Gauge["Lookups"] = float64(memStats.Lookups)
-	m.Gauge["MCacheInuse"] = float64(memStats.MCacheInuse)
-	m.Gauge["MCacheSys"] = float64(memStats.MCacheSys)
-	m.Gauge["MSpanInuse"] = float64(memStats.MSpanInuse)
-	m.Gauge["MSpanSys"] = float64(memStats.MSpanSys)
-	m.Gauge["Mallocs"] = float64(memStats.Mallocs)
-	m.Gauge["NextGC"] = float64(memStats.NextGC)
-	m.Gauge["NumForcedGC"] = float64(memStats.NumForcedGC)
-	m.Gauge["NumGC"] = float64(memStats.NumGC)
-	m.Gauge["OtherSys"] = float64(memStats.OtherSys)
-	m.Gauge["PauseTotalNs"] = float64(memStats.PauseTotalNs)
-	m.Gauge["StackInuse"] = float64(memStats.StackInuse)
-	m.Gauge["StackSys"] = float64(memStats.StackSys)
-	m.Gauge["Sys"] = float64(memStats.Sys)
-	m.Gauge["TotalAlloc"] = float64(memStats.TotalAlloc)
-
-	m.Gauge["RandomValue"] = rand.Float64()
-	m.Counter["PollCount"]++
+			// CPU utilization по ядрам
+			percentages, err := cpu.Percent(0, true)
+			if err == nil {
+				for i, p := range percentages {
+					name := fmt.Sprintf("CPUutilization%d", i+1)
+					store.SetGauge(name, p)
+				}
+			}
+		}
+	}
 }
 
-// SendMetricWithClient отправляет одну метрику на указанный baseURL
-func (m *Metrics) SendMetricWithClient(client *http.Client, baseURL, metricType, name string, value interface{}) {
-	var valueStr string
-	switch v := value.(type) {
-	case int64:
-		valueStr = fmt.Sprintf("%d", v)
-	case float64:
-		valueStr = fmt.Sprintf("%g", v)
-	default:
-		return
-	}
-
-	url := fmt.Sprintf("%s/update/%s/%s/%s", baseURL, metricType, name, valueStr)
-
-	req, err := http.NewRequest("POST", url, strings.NewReader(valueStr))
+// worker — отправляет одну метрику
+func sendMetric(client *http.Client, baseURL string, metric model.Metrics, pubKey *rsa.PublicKey) error {
+	data, err := json.Marshal(metric)
 	if err != nil {
-		fmt.Printf("Error creating request for %s: %v\n", name, err)
-		return
+		return fmt.Errorf("marshal metric %s: %w", metric.ID, err)
 	}
-	req.Header.Set("Content-Type", contentType)
 
-	resp, err := client.Do(req)
+	var bodyData []byte
+	useCrypto := pubKey != nil
+
+	if useCrypto {
+		encrypted, err := crypto.Encrypt(pubKey, data)
+		if err != nil {
+			return fmt.Errorf("encrypt metric %s: %w", metric.ID, err)
+		}
+		bodyData = encrypted
+	} else {
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		if _, err := gz.Write(data); err != nil {
+			gz.Close()
+			return fmt.Errorf("compress metric %s: %w", metric.ID, err)
+		}
+		gz.Close()
+		bodyData = buf.Bytes()
+	}
+
+	url := fmt.Sprintf("%s/update", baseURL)
+
+	cfg := retry.DefaultConfig()
+	return retry.Do(context.Background(), cfg, func() error {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(bodyData))
+		if err != nil {
+			return err
+		}
+
+		if useCrypto {
+			req.Header.Set("Content-Type", "application/octet-stream")
+			req.Header.Set("X-Crypto", "rsa")
+		} else {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Encoding", "gzip")
+		}
+		req.Header.Set("Accept-Encoding", "gzip")
+
+		if secretKey != "" && !useCrypto {
+			h := hash.Sign(string(data), secretKey)
+			req.Header.Set("HashSHA256", h)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("server %d: %s", resp.StatusCode, string(body))
+		}
+		return nil
+	})
+}
+
+// sendBatch отправляет батч метрик
+func sendBatch(client *http.Client, baseURL string, batch []model.Metrics, pubKey *rsa.PublicKey) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
+	data, err := json.Marshal(batch)
 	if err != nil {
-		fmt.Printf("Error sending metric %s: %v\n", name, err)
-		return
+		return fmt.Errorf("marshal batch: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("Error response for %s: %s\n", name, resp.Status)
+	var bodyData []byte
+	useCrypto := pubKey != nil
+
+	if useCrypto {
+		encrypted, err := crypto.Encrypt(pubKey, data)
+		if err != nil {
+			return fmt.Errorf("encrypt batch: %w", err)
+		}
+		bodyData = encrypted
+	} else {
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		if _, err := gz.Write(data); err != nil {
+			gz.Close()
+			return fmt.Errorf("compress batch: %w", err)
+		}
+		gz.Close()
+		bodyData = buf.Bytes()
+	}
+
+	url := fmt.Sprintf("%s/updates/", baseURL)
+
+	cfg := retry.DefaultConfig()
+	return retry.Do(context.Background(), cfg, func() error {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(bodyData))
+		if err != nil {
+			return err
+		}
+
+		if useCrypto {
+			req.Header.Set("Content-Type", "application/octet-stream")
+			req.Header.Set("X-Crypto", "rsa")
+		} else {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Encoding", "gzip")
+		}
+		req.Header.Set("Accept-Encoding", "gzip")
+
+		if secretKey != "" && !useCrypto {
+			h := hash.Sign(string(data), secretKey)
+			req.Header.Set("HashSHA256", h)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("server %d: %s", resp.StatusCode, string(body))
+		}
+		return nil
+	})
+}
+
+// sender — отправляет метрики каждые reportInterval
+func sender(store *agent.Store, wp *workerPool, interval time.Duration, stopCh <-chan struct{}, pubKey *rsa.PublicKey) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+			gauges, counters := store.Snapshot()
+
+			// Отправляем батч
+			var batch []model.Metrics
+			batch = append(batch, gauges...)
+			batch = append(batch, counters...)
+
+			if len(batch) == 0 {
+				continue
+			}
+
+			fmt.Printf("Sending batch with %d metrics\n", len(batch))
+			wp.Submit(func() {
+				if err := sendBatch(wp.client, wp.baseURL, batch, pubKey); err != nil {
+					fmt.Printf("Failed to send batch: %v\n", err)
+				} else {
+					fmt.Printf("Successfully sent batch with %d metrics\n", len(batch))
+				}
+			})
+		}
 	}
 }
 
-// ReportWithBaseURL отправляет все метрики на указанный сервер
-func (m *Metrics) ReportWithBaseURL(baseURL string) {
-	client := &http.Client{}
+// sendFinalMetricses отправляет финальный снимок метрик перед остановкой
+func sendFinalMetricses(store *agent.Store, wp *workerPool, pubKey *rsa.PublicKey) {
+	gauges, counters := store.Snapshot()
 
-	m.mu.RLock()
-	gauges := make(map[string]float64, len(m.Gauge))
-	for k, v := range m.Gauge {
-		gauges[k] = v
-	}
-	counters := make(map[string]int64, len(m.Counter))
-	for k, v := range m.Counter {
-		counters[k] = v
-	}
-	m.mu.RUnlock()
+	var batch []model.Metrics
+	batch = append(batch, gauges...)
+	batch = append(batch, counters...)
 
-	for name, value := range gauges {
-		m.SendMetricWithClient(client, baseURL, "gauge", name, value)
+	if len(batch) == 0 {
+		fmt.Println("No metrics to send on shutdown")
+		return
 	}
-	for name, value := range counters {
-		m.SendMetricWithClient(client, baseURL, "counter", name, value)
+
+	fmt.Printf("Sending final batch with %d metrics\n", len(batch))
+	if err := sendBatch(wp.client, wp.baseURL, batch, pubKey); err != nil {
+		fmt.Printf("Failed to send final batch: %v\n", err)
+	} else {
+		fmt.Printf("Successfully sent final batch with %d metrics\n", len(batch))
 	}
 }
 
 func main() {
+	printBuildInfo()
+
 	flag.Parse()
 
 	reportDuration := time.Duration(reportInterval) * time.Second
@@ -148,25 +353,60 @@ func main() {
 	}
 
 	fmt.Printf("Starting agent with server address: %s\n", serverAddress)
-	fmt.Printf("Report interval: %v, Poll interval: %v\n", reportDuration, pollDuration)
+	fmt.Printf("Report interval: %v, Poll interval: %v, Rate limit: %d\n", reportDuration, pollDuration, rateLimit)
 
-	metrics := NewMetrics()
-	tickerPoll := time.NewTicker(pollDuration)
-	tickerReport := time.NewTicker(reportDuration)
-	defer tickerPoll.Stop()
-	defer tickerReport.Stop()
-
-	metrics.Collect()
-	fmt.Println("Initial metrics collected")
-
-	for {
-		select {
-		case <-tickerPoll.C:
-			metrics.Collect()
-			fmt.Println("Metrics collected")
-		case <-tickerReport.C:
-			fmt.Println("Sending metrics to server...")
-			metrics.ReportWithBaseURL(serverAddress)
+	// Загружаем публичный ключ, если указан
+	var pubKey *rsa.PublicKey
+	if cryptoKeyPath != "" {
+		var err error
+		pubKey, err = crypto.LoadPublicKey(cryptoKeyPath)
+		if err != nil {
+			log.Fatalf("Failed to load public key: %v", err)
 		}
+		fmt.Println("RSA encryption enabled")
 	}
+
+	store := agent.NewStore()
+	client := &http.Client{}
+
+	// Запускаем worker pool
+	wp := newWorkerPool(rateLimit, client, serverAddress)
+	wp.Start()
+
+	// Каналы остановки
+	stopCollect := make(chan struct{})
+
+	// Запускаем сборщики метрик в отдельных горутинах
+	go runtimeCollector(store, pollDuration, stopCollect)
+	go gopsutilCollector(store, pollDuration, stopCollect)
+
+	// Запускаем отправителя
+	go sender(store, wp, reportDuration, stopCollect, pubKey)
+
+	// Ждём сигнал завершения
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+	<-sigCh
+
+	fmt.Println("\nShutting down agent...")
+
+	// Останавливаем сборщики — они сделают финальный снимок при выходе из ticker
+	close(stopCollect)
+
+	// Даём горутинам завершиться
+	time.Sleep(100 * time.Millisecond)
+
+	// Отправляем финальный снимок метрик, накопленных к моменту сигнала
+	sendFinalMetricses(store, wp, pubKey)
+
+	// Останавливаем worker pool, дожидаясь pending задач
+	wp.Stop()
+
+	fmt.Println("Agent stopped gracefully")
+}
+
+func printBuildInfo() {
+	fmt.Printf("Build version: %s\n", buildVersion)
+	fmt.Printf("Build date: %s\n", buildDate)
+	fmt.Printf("Build commit: %s\n", buildCommit)
 }
