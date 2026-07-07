@@ -924,3 +924,4 @@ func (m *memStorageWithDBError) Ping() error                               { ret
 func (m *memStorageWithDBError) Save() error                               { return nil }
 func (m *memStorageWithDBError) Load() error                               { return nil }
 func (m *memStorageWithDBError) UpdateBatch(metrics []model.Metrics) error { return nil }
+func (m *memStorageWithDBError) Close() error                              { return nil }

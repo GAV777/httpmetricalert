@@ -319,6 +319,27 @@ func sender(store *agent.Store, wp *workerPool, interval time.Duration, stopCh <
 	}
 }
 
+// sendFinalMetricses отправляет финальный снимок метрик перед остановкой
+func sendFinalMetricses(store *agent.Store, wp *workerPool, pubKey *rsa.PublicKey) {
+	gauges, counters := store.Snapshot()
+
+	var batch []model.Metrics
+	batch = append(batch, gauges...)
+	batch = append(batch, counters...)
+
+	if len(batch) == 0 {
+		fmt.Println("No metrics to send on shutdown")
+		return
+	}
+
+	fmt.Printf("Sending final batch with %d metrics\n", len(batch))
+	if err := sendBatch(wp.client, wp.baseURL, batch, pubKey); err != nil {
+		fmt.Printf("Failed to send final batch: %v\n", err)
+	} else {
+		fmt.Printf("Successfully sent final batch with %d metrics\n", len(batch))
+	}
+}
+
 func main() {
 	printBuildInfo()
 
@@ -364,12 +385,23 @@ func main() {
 
 	// Ждём сигнал завершения
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 	<-sigCh
 
 	fmt.Println("\nShutting down agent...")
+
+	// Останавливаем сборщики — они сделают финальный снимок при выходе из ticker
 	close(stopCollect)
+
+	// Даём горутинам завершиться
+	time.Sleep(100 * time.Millisecond)
+
+	// Отправляем финальный снимок метрик, накопленных к моменту сигнала
+	sendFinalMetricses(store, wp, pubKey)
+
+	// Останавливаем worker pool, дожидаясь pending задач
 	wp.Stop()
+
 	fmt.Println("Agent stopped gracefully")
 }
 

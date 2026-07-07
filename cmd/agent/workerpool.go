@@ -48,5 +48,17 @@ func (wp *workerPool) Submit(task func()) {
 
 func (wp *workerPool) Stop() {
 	close(wp.stopCh)
+
+	// Drain оставшихся задач из канала — выполняем их перед полным выходом
+drainLoop:
+	for {
+		select {
+		case task := <-wp.tasks:
+			task()
+		default:
+			break drainLoop
+		}
+	}
+
 	wp.wg.Wait()
 }

@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
 	"crypto/rsa"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/GAV777/httpmetricalert/internal/audit"
 	"github.com/GAV777/httpmetricalert/internal/config"
@@ -51,8 +56,46 @@ func main() {
 
 	router := setupRouter(handler, privKey)
 
-	log.Printf("Starting server on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, router))
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: router,
+	}
+
+	// Канал для сигналов завершения
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+
+	// Запускаем сервер в горутине
+	go func() {
+		log.Printf("Starting server on %s", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
+
+	// Ждём сигнал завершения
+	sig := <-sigCh
+	log.Printf("Received signal: %v", sig)
+
+	// Graceful shutdown: даём 30с на завершение in-flight запросов
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	log.Println("Shutting down server...")
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Server forced to shutdown: %v", err)
+	}
+
+	// Финальное сохранение и очистка ресурсов
+	if err := store.Close(); err != nil {
+		log.Printf("Failed to close storage: %v", err)
+	}
+	log.Println("Storage closed")
+
+	notifier.Close()
+	log.Println("Audit notifier closed")
+
+	log.Println("Server stopped gracefully")
 }
 
 // setupAuditNotifier создаёт и настраивает нотификатор аудита

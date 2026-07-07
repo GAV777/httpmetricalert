@@ -13,4 +13,5 @@ type MetricsStorage interface {
 	Save() error
 	Load() error
 	UpdateBatch(metrics []model.Metrics) error
+	Close() error
 }

@@ -279,3 +279,8 @@ func (s *MemStorage) UpdateBatch(metrics []model.Metrics) error {
 	s.mu.Unlock()
 	return nil
 }
+
+// Close выполняет финальное сохранение данных в файл перед закрытием хранилища.
+func (s *MemStorage) Close() error {
+	return s.Save()
+}
