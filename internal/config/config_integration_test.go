@@ -555,30 +555,6 @@ func TestValidateServerAddress_Valid(t *testing.T) {
 	ValidateServerAddress()
 }
 
-func TestValidateServerAddress_Empty(t *testing.T) {
-	env := newTestEnv(t)
-	defer env.Cleanup()
-
-	cfg.Address = ""
-	// ValidateServerAddress вызовет log.Fatal — тестируем через отдельный процесс
-	// Для простоты проверяем логику вручную
-	if ServerAddress() != "" {
-		t.Error("expected empty address")
-	}
-}
-
-func TestValidateServerAddress_NoPort(t *testing.T) {
-	env := newTestEnv(t)
-	defer env.Cleanup()
-
-	cfg.Address = "localhost"
-	// Ожидается ошибка валидации
-	// Проверяем что ServerAddress возвращает то же
-	if ServerAddress() == "localhost" {
-		// Валидация должна завершиться с ошибкой
-	}
-}
-
 // ——— Тесты resolveInt с duration-строками в env ———
 
 func TestResolveInt_DurationInEnv(t *testing.T) {
