@@ -1,75 +1,129 @@
 package config
 
 import (
+	"flag"
 	"os"
 	"testing"
 )
 
-func TestServerAddress(t *testing.T) {
-	// Без env
-	os.Unsetenv("ADDRESS")
-	ParseFlags()
+// resetFlagSet создаёт новый FlagSet для изоляции тестов
+func resetFlagSet(t *testing.T) {
+	t.Helper()
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	configFilePath = ""
+	flagSet = make(map[string]bool)
+	cfg = Config{}
+	// Перерегистрируем флаги
+	flag.StringVar(&configFilePath, "config", "", "Path to JSON configuration file")
+	flag.StringVar(&configFilePath, "c", "", "Path to JSON configuration file (shorthand)")
+}
+
+func TestServerAddressDefault(t *testing.T) {
+	resetFlagSet(t)
+	cfg = Config{Address: "localhost:8080"}
 	addr := ServerAddress()
-	if addr == "" {
-		t.Error("expected non-empty server address")
+	if addr != "localhost:8080" {
+		t.Errorf("expected localhost:8080, got %s", addr)
 	}
 }
 
-func TestStoreInterval(t *testing.T) {
-	ParseFlags()
-	interval := StoreInterval()
-	if interval < 0 {
-		t.Errorf("expected non-negative store interval, got %d", interval)
+func TestStoreIntervalDefault(t *testing.T) {
+	resetFlagSet(t)
+	cfg = Config{StoreInterval: 300}
+	if StoreInterval() != 300 {
+		t.Errorf("expected 300, got %d", StoreInterval())
 	}
 }
 
-func TestFileStoragePath(t *testing.T) {
-	ParseFlags()
-	path := FileStoragePath()
-	if path == "" {
-		t.Error("expected non-empty file storage path")
+func TestFileStoragePathDefault(t *testing.T) {
+	resetFlagSet(t)
+	cfg = Config{StoreFile: "/tmp/metrics.json"}
+	if FileStoragePath() != "/tmp/metrics.json" {
+		t.Errorf("expected /tmp/metrics.json, got %s", FileStoragePath())
 	}
 }
 
-func TestRestore(t *testing.T) {
-	ParseFlags()
-	restore := ShouldRestore()
-	// Значение по умолчанию true
-	if !restore {
-		t.Error("expected restore to be true by default")
+func TestShouldRestore(t *testing.T) {
+	resetFlagSet(t)
+	b := true
+	cfg = Config{Restore: &b}
+	if !ShouldRestore() {
+		t.Error("expected restore to be true")
+	}
+
+	b = false
+	cfg = Config{Restore: &b}
+	if ShouldRestore() {
+		t.Error("expected restore to be false")
 	}
 }
 
 func TestGzipEnabled(t *testing.T) {
-	ParseFlags()
-	gzip := GzipEnabled()
-	// Значение по умолчанию false
-	if gzip {
-		t.Error("expected gzip to be false by default")
+	resetFlagSet(t)
+	cfg = Config{EnableGzip: nil}
+	if GzipEnabled() {
+		t.Error("expected gzip to be false when nil")
+	}
+
+	b := true
+	cfg = Config{EnableGzip: &b}
+	if !GzipEnabled() {
+		t.Error("expected gzip to be true")
 	}
 }
 
 func TestDatabaseDSN(t *testing.T) {
-	ParseFlags()
-	dsn := DatabaseDSN()
-	// DSN по умолчанию пустой
-	if dsn != "" {
-		t.Errorf("expected empty DSN, got '%s'", dsn)
+	resetFlagSet(t)
+	cfg = Config{DatabaseDSN: ""}
+	if DatabaseDSN() != "" {
+		t.Errorf("expected empty DSN, got '%s'", DatabaseDSN())
 	}
 }
 
 func TestAuditFile(t *testing.T) {
-	ParseFlags()
-	file := AuditFile()
-	if file != "" {
-		t.Errorf("expected empty audit file, got '%s'", file)
+	resetFlagSet(t)
+	cfg = Config{AuditFile: ""}
+	if AuditFile() != "" {
+		t.Errorf("expected empty audit file, got '%s'", AuditFile())
 	}
 }
 
 func TestAuditURL(t *testing.T) {
-	ParseFlags()
-	url := AuditURL()
-	if url != "" {
-		t.Errorf("expected empty audit URL, got '%s'", url)
+	resetFlagSet(t)
+	cfg = Config{AuditURL: ""}
+	if AuditURL() != "" {
+		t.Errorf("expected empty audit URL, got '%s'", AuditURL())
+	}
+}
+
+func TestGetSecretKey(t *testing.T) {
+	resetFlagSet(t)
+	cfg = Config{Key: "my-secret"}
+	if GetSecretKey() != "my-secret" {
+		t.Errorf("expected 'my-secret', got '%s'", GetSecretKey())
+	}
+}
+
+func TestPollInterval(t *testing.T) {
+	resetFlagSet(t)
+	cfg = Config{PollInterval: 2}
+	if PollInterval() != 2 {
+		t.Errorf("expected 2, got %d", PollInterval())
+	}
+}
+
+func TestReportInterval(t *testing.T) {
+	resetFlagSet(t)
+	cfg = Config{ReportInterval: 10}
+	if ReportInterval() != 10 {
+		t.Errorf("expected 10, got %d", ReportInterval())
+	}
+}
+
+func TestRateLimit(t *testing.T) {
+	resetFlagSet(t)
+	cfg = Config{RateLimit: 1}
+	if RateLimit() != 1 {
+		t.Errorf("expected 1, got %d", RateLimit())
 	}
 }

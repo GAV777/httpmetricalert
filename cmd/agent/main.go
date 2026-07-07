@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rsa"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -15,12 +14,12 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/GAV777/httpmetricalert/internal/agent"
+	"github.com/GAV777/httpmetricalert/internal/config"
 	"github.com/GAV777/httpmetricalert/internal/model"
 	"github.com/GAV777/httpmetricalert/pkg/crypto"
 	"github.com/GAV777/httpmetricalert/pkg/hash"
@@ -35,47 +34,8 @@ var (
 	buildCommit  = "N/A"
 )
 
-var (
-	serverAddress  string
-	reportInterval int // в секундах
-	pollInterval   int // в секундах
-	secretKey      string
-	rateLimit      int    // максимальное кол-во одновременных запросов
-	cryptoKeyPath  string // путь к файлу публичного ключа
-)
-
 func init() {
-	addr := getEnvOrDefault("ADDRESS", "localhost:8080")
-	reportStr := getEnvOrDefault("REPORT_INTERVAL", "10")
-	pollStr := getEnvOrDefault("POLL_INTERVAL", "2")
-	key := getEnvOrDefault("KEY", "")
-	rateLimitStr := getEnvOrDefault("RATE_LIMIT", "1")
-	cKey := getEnvOrDefault("CRYPTO_KEY", "")
-
-	flag.StringVar(&serverAddress, "a", addr, "HTTP server address")
-	flag.IntVar(&reportInterval, "r", parseIntOrPanic(reportStr, "REPORT_INTERVAL"), "Report interval in seconds")
-	flag.IntVar(&pollInterval, "p", parseIntOrPanic(pollStr, "POLL_INTERVAL"), "Poll interval in seconds")
-	flag.StringVar(&secretKey, "k", key, "Secret key for SHA256 hashing")
-	flag.IntVar(&rateLimit, "l", parseIntOrPanic(rateLimitStr, "RATE_LIMIT"), "Max concurrent requests")
-	flag.StringVar(&cryptoKeyPath, "crypto-key", cKey, "Path to RSA public key file for request encryption")
-}
-
-func getEnvOrDefault(key, defaultValue string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
-	}
-	return defaultValue
-}
-
-func parseIntOrPanic(s, context string) int {
-	if n, err := strconv.Atoi(s); err == nil {
-		if n <= 0 {
-			log.Fatalf("%s must be positive, got %d", context, n)
-		}
-		return n
-	}
-	log.Fatalf("Invalid value for %s: %s (must be integer)", context, s)
-	panic("unreachable")
+	// Флаг -config/-c регистрируется в config.init()
 }
 
 // runtimeCollector собирает метрики runtime
@@ -199,8 +159,8 @@ func sendMetric(client *http.Client, baseURL string, metric model.Metrics, pubKe
 		}
 		req.Header.Set("Accept-Encoding", "gzip")
 
-		if secretKey != "" && !useCrypto {
-			h := hash.Sign(string(data), secretKey)
+		if key := config.GetSecretKey(); key != "" && !useCrypto {
+			h := hash.Sign(string(data), key)
 			req.Header.Set("HashSHA256", h)
 		}
 
@@ -267,8 +227,8 @@ func sendBatch(client *http.Client, baseURL string, batch []model.Metrics, pubKe
 		}
 		req.Header.Set("Accept-Encoding", "gzip")
 
-		if secretKey != "" && !useCrypto {
-			h := hash.Sign(string(data), secretKey)
+		if key := config.GetSecretKey(); key != "" && !useCrypto {
+			h := hash.Sign(string(data), key)
 			req.Header.Set("HashSHA256", h)
 		}
 
@@ -343,10 +303,13 @@ func sendFinalMetricses(store *agent.Store, wp *workerPool, pubKey *rsa.PublicKe
 func main() {
 	printBuildInfo()
 
-	flag.Parse()
+	config.ParseFlags()
 
-	reportDuration := time.Duration(reportInterval) * time.Second
-	pollDuration := time.Duration(pollInterval) * time.Second
+	serverAddress := config.ServerAddress()
+	reportDuration := time.Duration(config.ReportInterval()) * time.Second
+	pollDuration := time.Duration(config.PollInterval()) * time.Second
+	rateLimit := config.RateLimit()
+	cryptoKeyPath := config.CryptoKey()
 
 	if !strings.HasPrefix(serverAddress, "http://") && !strings.HasPrefix(serverAddress, "https://") {
 		serverAddress = "http://" + serverAddress
