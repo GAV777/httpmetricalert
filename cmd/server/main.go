@@ -1,59 +1,131 @@
-// cmd/server/main.go
 package main
 
 import (
-	"flag"
-	"github.com/GAV777/httpmetricalert/internal/handlers"
-	"github.com/GAV777/httpmetricalert/internal/storage"
+	"context"
+	"crypto/rsa"
 	"log"
 	"net/http"
-	"strings"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	"github.com/GAV777/httpmetricalert/internal/audit"
+	"github.com/GAV777/httpmetricalert/internal/config"
+	"github.com/GAV777/httpmetricalert/internal/handlers"
+	"github.com/GAV777/httpmetricalert/internal/storage"
+	"github.com/GAV777/httpmetricalert/pkg/crypto"
+	"github.com/rs/zerolog"
 )
 
-// === Middleware для блокировки путей с двойными слешами ===
-func noDoubleSlashes(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "//") {
-			http.Error(w, "Not Found", http.StatusNotFound)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
+var (
+	buildVersion = "N/A"
+	buildDate    = "N/A"
+	buildCommit  = "N/A"
+)
 
-// === Основная функция — ТОЧКА ВХОДА ===
 func main() {
-	addr := flag.String("a", "localhost:8080", "адрес эндпоинта HTTP-сервера")
-	flag.Parse()
+	printBuildInfo()
 
-	if len(flag.Args()) > 0 {
-		log.Fatalf("неизвестные аргументы командной строки: %v", flag.Args())
+	// Инициализация логгера
+	zerolog.TimeFieldFormat = "2006-01-02T15:04:05Z07:00"
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+
+	config.ParseFlags()
+
+	addr := config.ServerAddress()
+	config.ValidateServerAddress()
+
+	store := storage.NewStorage()
+
+	// Загружаем приватный ключ, если указан
+	var privKey *rsa.PrivateKey
+	if cryptoKeyPath := config.CryptoKey(); cryptoKeyPath != "" {
+		var err error
+		privKey, err = crypto.LoadPrivateKey(cryptoKeyPath)
+		if err != nil {
+			log.Fatalf("Failed to load private key: %v", err)
+		}
+		log.Println("RSA decryption enabled")
 	}
 
-	// Создаём хранилище
-	storage := storage.NewMemStorage()
+	// Создаём нотификатор аудита
+	notifier := setupAuditNotifier()
 
-	// Создаём хендлеры с внедрением зависимости
-	handler := handlers.NewMetricsHandler(storage)
+	handler := handlers.NewMetricsHandler(store, notifier)
 
-	r := chi.NewRouter()
+	router := setupRouter(handler, privKey)
 
-	r.Use(middleware.Recoverer)
-	r.Use(noDoubleSlashes)
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: router,
+	}
 
-	// Маршруты
-	r.Post("/update/{type}/{name}/{value}", handler.UpdateHandler)
-	r.Get("/value/{type}/{name}", handler.GetValueHandler)
-	r.Get("/", handler.ListMetricsHandler)
+	// Канал для сигналов завершения
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 
-	// Глобальный 404
-	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "Not Found", http.StatusNotFound)
-	})
+	// Запускаем сервер в горутине
+	go func() {
+		log.Printf("Starting server on %s", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
 
-	log.Printf("🚀 Starting server on %s", *addr)
-	log.Fatal(http.ListenAndServe(*addr, r))
+	// Ждём сигнал завершения
+	sig := <-sigCh
+	log.Printf("Received signal: %v", sig)
+
+	// Graceful shutdown: даём 30с на завершение in-flight запросов
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	log.Println("Shutting down server...")
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Server forced to shutdown: %v", err)
+	}
+
+	// Финальное сохранение и очистка ресурсов
+	if err := store.Close(); err != nil {
+		log.Printf("Failed to close storage: %v", err)
+	}
+	log.Println("Storage closed")
+
+	notifier.Close()
+	log.Println("Audit notifier closed")
+
+	log.Println("Server stopped gracefully")
+}
+
+// setupAuditNotifier создаёт и настраивает нотификатор аудита
+func setupAuditNotifier() *audit.Notifier {
+	notifier := audit.NewNotifier()
+
+	if file := config.AuditFile(); file != "" {
+		obs, err := audit.NewFileObserver(file)
+		if err != nil {
+			log.Printf("Failed to create file observer for %s: %v", file, err)
+		} else {
+			notifier.AddObserver(obs)
+			log.Printf("Audit file observer enabled: %s", file)
+		}
+	}
+
+	if url := config.AuditURL(); url != "" {
+		notifier.AddObserver(audit.NewHTTPObserver(url))
+		log.Printf("Audit HTTP observer enabled: %s", url)
+	}
+
+	if !notifier.HasObservers() {
+		log.Println("Audit disabled (no --audit-file or --audit-url configured)")
+	}
+
+	return notifier
+}
+
+func printBuildInfo() {
+	log.Printf("Build version: %s\n", buildVersion)
+	log.Printf("Build date: %s\n", buildDate)
+	log.Printf("Build commit: %s\n", buildCommit)
 }
