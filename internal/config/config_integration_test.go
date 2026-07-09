@@ -140,9 +140,14 @@ func (e *testEnv) parse() {
 
 // resolveConfig — ручное разрешение без flag.Parse
 func (e *testEnv) resolveConfig() {
-	fc, err := loadFileConfig()
+	// Определяем путь к файлу: флаг > env CONFIG
+	path := configFilePath
+	if path == "" {
+		path = os.Getenv("CONFIG")
+	}
+	fc, err := loadConfigFile(path)
 	if err != nil {
-		e.t.Fatalf("loadFileConfig error: %v", err)
+		e.t.Fatalf("loadConfigFile error: %v", err)
 	}
 	if fc == nil {
 		fc = &fileConfig{}
@@ -153,22 +158,15 @@ func (e *testEnv) resolveConfig() {
 		DatabaseDSN:    resolveString("d", "DATABASE_DSN", fc.DatabaseDSN, ""),
 		CryptoKey:      resolveString("crypto-key", "CRYPTO_KEY", fc.CryptoKey, ""),
 		Key:            resolveString("k", "KEY", fc.Key, ""),
-		StoreInterval:  resolveInt("i", "STORE_INTERVAL", fc.StoreInterval, 300),
+		StoreInterval:  resolveDuration("i", "STORE_INTERVAL", fc.StoreInterval, 300),
 		StoreFile:      resolveString("f", "FILE_STORAGE_PATH", fc.StoreFile, "/tmp/metrics.json"),
-		Restore:        ptrBool(resolveBool("r", "RESTORE", fc.Restore, true)),
+		Restore:        ptrBool(resolveBool("restore", "RESTORE", fc.Restore, true)),
 		EnableGzip:     ptrBool(resolveBool("g", "ENABLE_GZIP", fc.EnableGzip, false)),
 		AuditFile:      resolveString("audit-file", "AUDIT_FILE", fc.AuditFile, ""),
 		AuditURL:       resolveString("audit-url", "AUDIT_URL", fc.AuditURL, ""),
-		PollInterval:   resolveInt("p", "POLL_INTERVAL", fc.PollInterval, 2),
-		ReportInterval: resolveInt("report-interval", "REPORT_INTERVAL", fc.ReportInterval, 10),
+		PollInterval:   resolveDuration("p", "POLL_INTERVAL", fc.PollInterval, 2),
+		ReportInterval: resolveDuration("report-interval", "REPORT_INTERVAL", fc.ReportInterval, 10),
 		RateLimit:      resolveInt("l", "RATE_LIMIT", fc.RateLimit, 1),
-	}
-
-	// Специальная обработка для -d
-	if !flagSet["d"] {
-		if envDSN := os.Getenv("DATABASE_DSN"); envDSN != "" {
-			cfg.DatabaseDSN = envDSN
-		}
 	}
 }
 
@@ -191,7 +189,7 @@ func TestLoadFileConfig_ValidJSON(t *testing.T) {
 
 	content := `{
 		"address": "localhost:9090",
-		"store_interval": 60,
+		"store_interval": "1m",
 		"store_file": "/tmp/test.json",
 		"restore": false,
 		"enable_gzip": true,
@@ -200,8 +198,8 @@ func TestLoadFileConfig_ValidJSON(t *testing.T) {
 		"crypto_key": "/path/to/key.pem",
 		"audit_file": "/tmp/audit.log",
 		"audit_url": "http://localhost:8081/audit",
-		"poll_interval": 5,
-		"report_interval": 15,
+		"poll_interval": "5s",
+		"report_interval": "15s",
 		"rate_limit": 3
 	}`
 
@@ -316,16 +314,22 @@ func TestLoadFileConfig_EmptyFile(t *testing.T) {
 }
 
 func TestLoadFileConfig_NonExistent(t *testing.T) {
-	// Устанавливаем путь напрямую, минуя флаги
-	configFilePath = "/nonexistent/path/config.json"
-	defer func() { configFilePath = "" }()
-
-	fc, err := loadFileConfig()
+	fc, err := loadConfigFile("/nonexistent/path/config.json")
 	if err == nil {
 		t.Error("expected error for non-existent file")
 	}
 	if fc != nil {
 		t.Error("expected nil fileConfig on error")
+	}
+}
+
+func TestLoadConfigFile_EmptyPath(t *testing.T) {
+	fc, err := loadConfigFile("")
+	if err != nil {
+		t.Errorf("expected no error for empty path, got %v", err)
+	}
+	if fc != nil {
+		t.Error("expected nil fileConfig for empty path")
 	}
 }
 
@@ -336,12 +340,13 @@ func TestLoadFileConfig_InvalidJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Путь не установлен через flag, поэтому loadFileConfig вернёт nil без ошибки
-	fc, err := loadFileConfig()
-	if fc != nil {
-		t.Error("expected nil fileConfig when configFilePath not set")
+	fc, err := loadConfigFile(configFile)
+	if err == nil {
+		t.Error("expected error for invalid JSON")
 	}
-	_ = err // Ошибка может быть nil т.к. configFilePath пустой
+	if fc != nil {
+		t.Error("expected nil fileConfig on parse error")
+	}
 }
 
 // ——— Тесты приоритетов: flag > env > file > default ———
@@ -352,7 +357,7 @@ func TestPriority_FlagOverridesAll(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "config.json")
-	content := `{"address": "from-file:8080", "store_interval": 50, "poll_interval": 3}`
+	content := `{"address": "from-file:8080", "store_interval": "50s", "poll_interval": "3s"}`
 	if err := os.WriteFile(configFile, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +386,7 @@ func TestPriority_EnvOverridesFile(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "config.json")
-	content := `{"address": "from-file:8080", "store_interval": 50}`
+	content := `{"address": "from-file:8080", "store_interval": "50s"}`
 	if err := os.WriteFile(configFile, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}

@@ -43,7 +43,7 @@ type Config struct {
 // fileConfig — структура для десериализации JSON-файла.
 type fileConfig struct {
 	Address        string `json:"address"`
-	StoreInterval  *int   `json:"store_interval"`
+	StoreInterval  string `json:"store_interval"`
 	StoreFile      string `json:"store_file"`
 	Restore        *bool  `json:"restore"`
 	EnableGzip     *bool  `json:"enable_gzip"`
@@ -52,8 +52,8 @@ type fileConfig struct {
 	CryptoKey      string `json:"crypto_key"`
 	AuditFile      string `json:"audit_file"`
 	AuditURL       string `json:"audit_url"`
-	PollInterval   *int   `json:"poll_interval"`
-	ReportInterval *int   `json:"report_interval"`
+	PollInterval   string `json:"poll_interval"`
+	ReportInterval string `json:"report_interval"`
 	RateLimit      *int   `json:"rate_limit"`
 }
 
@@ -81,6 +81,33 @@ var (
 	pollIntervalFlag    int
 	reportIntervalFlag  int
 	rateLimitFlag       int
+
+	// flagStringGetters мапит имя флага в функцию-геттер строкового значения.
+	flagStringGetters = map[string]func() string{
+		"a":          func() string { return serverAddressFlag },
+		"d":          func() string { return databaseDSNFlag },
+		"crypto-key": func() string { return cryptoKeyFlag },
+		"k":          func() string { return keyFlag },
+		"f":          func() string { return fileStoragePathFlag },
+		"audit-file": func() string { return auditFileFlag },
+		"audit-url":  func() string { return auditURLFlag },
+		"config":     func() string { return configFilePath },
+	}
+
+	// flagIntGetters мапит имя флага в функцию-геттер int значения.
+	flagIntGetters = map[string]func() int{
+		"i":               func() int { return storeIntervalFlag },
+		"p":               func() int { return pollIntervalFlag },
+		"r":               func() int { return reportIntervalFlag },
+		"report-interval": func() int { return reportIntervalFlag },
+		"l":               func() int { return rateLimitFlag },
+	}
+
+	// flagBoolGetters мапит имя флага в функцию-геттер bool значения.
+	flagBoolGetters = map[string]func() bool{
+		"restore": func() bool { return restoreFlag },
+		"g":       func() bool { return gzipFlag },
+	}
 )
 
 func init() {
@@ -91,7 +118,7 @@ func init() {
 	flag.StringVar(&serverAddressFlag, "a", "localhost:8080", "HTTP server address")
 	flag.IntVar(&storeIntervalFlag, "i", 300, "Store interval in seconds (0 for sync)")
 	flag.StringVar(&fileStoragePathFlag, "f", "/tmp/metrics.json", "File path to store metrics")
-	flag.BoolVar(&restoreFlag, "r", true, "Restore metrics from file on start")
+	flag.BoolVar(&restoreFlag, "restore", true, "Restore metrics from file on start")
 	flag.BoolVar(&gzipFlag, "g", false, "Enable GZIP compression for responses")
 	flag.StringVar(&databaseDSNFlag, "d", "", "Database DSN (PostgreSQL)")
 	flag.StringVar(&keyFlag, "k", "", "Secret key for HMAC-SHA256")
@@ -101,28 +128,26 @@ func init() {
 
 	// Агентские флаги
 	flag.IntVar(&pollIntervalFlag, "p", 2, "Poll interval in seconds")
-	flag.IntVar(&reportIntervalFlag, "report-interval", 10, "Report interval in seconds")
+	flag.IntVar(&reportIntervalFlag, "r", 10, "Report interval in seconds")
+	flag.IntVar(&reportIntervalFlag, "report-interval", 10, "Report interval in seconds (long form)")
 	flag.IntVar(&rateLimitFlag, "l", 1, "Max concurrent requests")
 }
 
-// loadFileConfig загружает конфигурацию из JSON-файла.
-func loadFileConfig() (*fileConfig, error) {
-	if configFilePath == "" {
-		// Проверяем переменную окружения CONFIG
-		configFilePath = os.Getenv("CONFIG")
-	}
-	if configFilePath == "" {
+// loadConfigFile загружает конфигурацию из JSON-файла по указанному пути.
+// Возвращает nil, если path пустой.
+func loadConfigFile(path string) (*fileConfig, error) {
+	if path == "" {
 		return nil, nil // нет файла конфигурации
 	}
 
-	data, err := os.ReadFile(configFilePath)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read config file %s: %w", configFilePath, err)
+		return nil, fmt.Errorf("read config file %s: %w", path, err)
 	}
 
 	var fc fileConfig
 	if err := json.Unmarshal(data, &fc); err != nil {
-		return nil, fmt.Errorf("parse config file %s: %w", configFilePath, err)
+		return nil, fmt.Errorf("parse config file %s: %w", path, err)
 	}
 
 	return &fc, nil
@@ -132,24 +157,8 @@ func loadFileConfig() (*fileConfig, error) {
 // flag > env > file > defaultValue
 func resolveString(flagName, envKey, fileVal, defaultValue string) string {
 	if flagSet[flagName] {
-		// Флаг установлен явно — используем его значение
-		switch flagName {
-		case "a":
-			return serverAddressFlag
-		case "d":
-			return databaseDSNFlag
-		case "crypto-key":
-			return cryptoKeyFlag
-		case "k":
-			return keyFlag
-		case "f":
-			return fileStoragePathFlag
-		case "audit-file":
-			return auditFileFlag
-		case "audit-url":
-			return auditURLFlag
-		case "config":
-			return configFilePath
+		if getter, ok := flagStringGetters[flagName]; ok {
+			return getter()
 		}
 	}
 	if val := os.Getenv(envKey); val != "" {
@@ -165,15 +174,8 @@ func resolveString(flagName, envKey, fileVal, defaultValue string) string {
 // flag > env > file > defaultValue
 func resolveInt(flagName, envKey string, fileVal *int, defaultValue int) int {
 	if flagSet[flagName] {
-		switch flagName {
-		case "i":
-			return storeIntervalFlag
-		case "p":
-			return pollIntervalFlag
-		case "report-interval":
-			return reportIntervalFlag
-		case "l":
-			return rateLimitFlag
+		if getter, ok := flagIntGetters[flagName]; ok {
+			return getter()
 		}
 	}
 	if val := os.Getenv(envKey); val != "" {
@@ -191,15 +193,34 @@ func resolveInt(flagName, envKey string, fileVal *int, defaultValue int) int {
 	return defaultValue
 }
 
+// resolveDuration разрешает значение-длительность по приоритету:
+// flag > env > file > defaultValue.
+// Файловые значения парсятся как duration-строки ("300s", "5m").
+func resolveDuration(flagName, envKey string, fileVal string, defaultValue int) int {
+	if flagSet[flagName] {
+		if getter, ok := flagIntGetters[flagName]; ok {
+			return getter()
+		}
+	}
+	if val := os.Getenv(envKey); val != "" {
+		if n := parseDurationSeconds(val); n != 0 {
+			return n
+		}
+	}
+	if fileVal != "" {
+		if n := parseDurationSeconds(fileVal); n != 0 {
+			return n
+		}
+	}
+	return defaultValue
+}
+
 // resolveBool разрешает булево значение по приоритету:
 // flag > env > file > defaultValue
 func resolveBool(flagName, envKey string, fileVal *bool, defaultValue bool) bool {
 	if flagSet[flagName] {
-		switch flagName {
-		case "r":
-			return restoreFlag
-		case "g":
-			return gzipFlag
+		if getter, ok := flagBoolGetters[flagName]; ok {
+			return getter()
 		}
 	}
 	if val := os.Getenv(envKey); val != "" {
@@ -227,8 +248,14 @@ func ParseFlags() {
 		flagSet[name] = true
 	})
 
+	// Определяем путь к файлу: флаг > env CONFIG
+	path := configFilePath
+	if path == "" {
+		path = os.Getenv("CONFIG")
+	}
+
 	// Загружаем файл конфигурации
-	fc, err := loadFileConfig()
+	fc, err := loadConfigFile(path)
 	if err != nil {
 		log.Fatalf("Failed to load config file: %v", err)
 	}
@@ -245,25 +272,17 @@ func ParseFlags() {
 		Key:         resolveString("k", "KEY", fc.Key, ""),
 
 		// Сервер
-		StoreInterval: resolveInt("i", "STORE_INTERVAL", fc.StoreInterval, 300),
+		StoreInterval: resolveDuration("i", "STORE_INTERVAL", fc.StoreInterval, 300),
 		StoreFile:     resolveString("f", "FILE_STORAGE_PATH", fc.StoreFile, "/tmp/metrics.json"),
-		Restore:       ptrBool(resolveBool("r", "RESTORE", fc.Restore, true)),
+		Restore:       ptrBool(resolveBool("restore", "RESTORE", fc.Restore, true)),
 		EnableGzip:    ptrBool(resolveBool("g", "ENABLE_GZIP", fc.EnableGzip, false)),
 		AuditFile:     resolveString("audit-file", "AUDIT_FILE", fc.AuditFile, ""),
 		AuditURL:      resolveString("audit-url", "AUDIT_URL", fc.AuditURL, ""),
 
 		// Агент
-		PollInterval:   resolveInt("p", "POLL_INTERVAL", fc.PollInterval, 2),
-		ReportInterval: resolveInt("report-interval", "REPORT_INTERVAL", fc.ReportInterval, 10),
+		PollInterval:   resolveDuration("p", "POLL_INTERVAL", fc.PollInterval, 2),
+		ReportInterval: resolveDuration("report-interval", "REPORT_INTERVAL", fc.ReportInterval, 10),
 		RateLimit:      resolveInt("l", "RATE_LIMIT", fc.RateLimit, 1),
-	}
-
-	// Специальная обработка для -d: если флаг не установлен явно,
-	// используем env var даже после flag.Parse
-	if !flagSet["d"] {
-		if envDSN := os.Getenv("DATABASE_DSN"); envDSN != "" {
-			cfg.DatabaseDSN = envDSN
-		}
 	}
 }
 
