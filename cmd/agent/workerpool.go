@@ -10,16 +10,18 @@ type workerPool struct {
 	tasks   chan func()
 	client  *http.Client
 	baseURL string
+	agentIP string
 	size    int
 	wg      sync.WaitGroup
 	stopCh  chan struct{}
 }
 
-func newWorkerPool(size int, client *http.Client, baseURL string) *workerPool {
+func newWorkerPool(size int, client *http.Client, baseURL string, agentIP string) *workerPool {
 	return &workerPool{
 		tasks:   make(chan func(), size*2),
 		client:  client,
 		baseURL: baseURL,
+		agentIP: agentIP,
 		size:    size,
 		stopCh:  make(chan struct{}),
 	}

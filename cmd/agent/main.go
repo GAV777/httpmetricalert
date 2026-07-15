@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -115,7 +116,7 @@ func gopsutilCollector(store *agent.Store, interval time.Duration, stopCh <-chan
 }
 
 // worker — отправляет одну метрику
-func sendMetric(client *http.Client, baseURL string, metric model.Metrics, pubKey *rsa.PublicKey) error {
+func sendMetric(client *http.Client, baseURL string, metric model.Metrics, pubKey *rsa.PublicKey, agentIP string) error {
 	data, err := json.Marshal(metric)
 	if err != nil {
 		return fmt.Errorf("marshal metric %s: %w", metric.ID, err)
@@ -159,6 +160,10 @@ func sendMetric(client *http.Client, baseURL string, metric model.Metrics, pubKe
 		}
 		req.Header.Set("Accept-Encoding", "gzip")
 
+		if agentIP != "" {
+			req.Header.Set("X-Real-IP", agentIP)
+		}
+
 		if key := config.GetSecretKey(); key != "" && !useCrypto {
 			h := hash.Sign(string(data), key)
 			req.Header.Set("HashSHA256", h)
@@ -179,7 +184,7 @@ func sendMetric(client *http.Client, baseURL string, metric model.Metrics, pubKe
 }
 
 // sendBatch отправляет батч метрик
-func sendBatch(client *http.Client, baseURL string, batch []model.Metrics, pubKey *rsa.PublicKey) error {
+func sendBatch(client *http.Client, baseURL string, batch []model.Metrics, pubKey *rsa.PublicKey, agentIP string) error {
 	if len(batch) == 0 {
 		return nil
 	}
@@ -227,6 +232,10 @@ func sendBatch(client *http.Client, baseURL string, batch []model.Metrics, pubKe
 		}
 		req.Header.Set("Accept-Encoding", "gzip")
 
+		if agentIP != "" {
+			req.Header.Set("X-Real-IP", agentIP)
+		}
+
 		if key := config.GetSecretKey(); key != "" && !useCrypto {
 			h := hash.Sign(string(data), key)
 			req.Header.Set("HashSHA256", h)
@@ -269,7 +278,7 @@ func sender(store *agent.Store, wp *workerPool, interval time.Duration, stopCh <
 
 			fmt.Printf("Sending batch with %d metrics\n", len(batch))
 			wp.Submit(func() {
-				if err := sendBatch(wp.client, wp.baseURL, batch, pubKey); err != nil {
+				if err := sendBatch(wp.client, wp.baseURL, batch, pubKey, wp.agentIP); err != nil {
 					fmt.Printf("Failed to send batch: %v\n", err)
 				} else {
 					fmt.Printf("Successfully sent batch with %d metrics\n", len(batch))
@@ -293,7 +302,7 @@ func sendFinalMetricses(store *agent.Store, wp *workerPool, pubKey *rsa.PublicKe
 	}
 
 	fmt.Printf("Sending final batch with %d metrics\n", len(batch))
-	if err := sendBatch(wp.client, wp.baseURL, batch, pubKey); err != nil {
+	if err := sendBatch(wp.client, wp.baseURL, batch, pubKey, wp.agentIP); err != nil {
 		fmt.Printf("Failed to send final batch: %v\n", err)
 	} else {
 		fmt.Printf("Successfully sent final batch with %d metrics\n", len(batch))
@@ -331,9 +340,10 @@ func main() {
 
 	store := agent.NewStore()
 	client := &http.Client{}
+	agentIP := getLocalIP()
 
 	// Запускаем worker pool
-	wp := newWorkerPool(rateLimit, client, serverAddress)
+	wp := newWorkerPool(rateLimit, client, serverAddress, agentIP)
 	wp.Start()
 
 	// Каналы остановки
@@ -366,6 +376,22 @@ func main() {
 	wp.Stop()
 
 	fmt.Println("Agent stopped gracefully")
+}
+
+// getLocalIP возвращает IP-адрес хоста
+func getLocalIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+			if ipNet.IP.To4() != nil {
+				return ipNet.IP.String()
+			}
+		}
+	}
+	return ""
 }
 
 func printBuildInfo() {

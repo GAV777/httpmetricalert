@@ -58,7 +58,7 @@ func TestSender(t *testing.T) {
 	store.SetGauge("TestMetric", 100.0)
 
 	client := &http.Client{}
-	wp := newWorkerPool(1, client, server.URL)
+	wp := newWorkerPool(1, client, server.URL, "")
 	wp.Start()
 	defer wp.Stop()
 
@@ -93,7 +93,7 @@ func TestSendMetricWithGZIP(t *testing.T) {
 		Value: floatPtr(42.0),
 	}
 
-	err := sendMetric(server.Client(), server.URL, metric, nil)
+	err := sendMetric(server.Client(), server.URL, metric, nil, "")
 	if err != nil {
 		t.Errorf("sendMetric failed: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestSendBatchWithGZIP(t *testing.T) {
 		{ID: "Metric2", MType: "counter", Delta: int64Ptr(5)},
 	}
 
-	err := sendBatch(server.Client(), server.URL, batch, nil)
+	err := sendBatch(server.Client(), server.URL, batch, nil, "")
 	if err != nil {
 		t.Errorf("sendBatch failed: %v", err)
 	}

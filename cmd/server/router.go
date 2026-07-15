@@ -38,6 +38,10 @@ func setupRouter(handler *handlers.MetricsHandler, privKey *rsa.PrivateKey) http
 	secretKey := config.GetSecretKey()
 	r.Use(middleware.HashMiddleware(secretKey))
 
+	// Подключаем middleware для проверки доверенной подсети
+	trustedSubnet := config.TrustedSubnet()
+	r.Use(middleware.TrustedSubnetMiddleware(trustedSubnet))
+
 	// Маршруты
 	r.Post("/update", handler.UpdateJSONHandler)
 	r.Post("/value", handler.GetValueJSONHandler)

@@ -33,6 +33,7 @@ type Config struct {
 	EnableGzip    *bool  `json:"enable_gzip,omitempty"`
 	AuditFile     string `json:"audit_file,omitempty"`
 	AuditURL      string `json:"audit_url,omitempty"`
+	TrustedSubnet string `json:"trusted_subnet,omitempty"`
 
 	// Агент
 	PollInterval   int `json:"poll_interval,omitempty"`
@@ -52,6 +53,7 @@ type fileConfig struct {
 	CryptoKey      string `json:"crypto_key"`
 	AuditFile      string `json:"audit_file"`
 	AuditURL       string `json:"audit_url"`
+	TrustedSubnet  string `json:"trusted_subnet"`
 	PollInterval   string `json:"poll_interval"`
 	ReportInterval string `json:"report_interval"`
 	RateLimit      *int   `json:"rate_limit"`
@@ -78,6 +80,7 @@ var (
 	cryptoKeyFlag       string
 	auditFileFlag       string
 	auditURLFlag        string
+	trustedSubnetFlag   string
 	pollIntervalFlag    int
 	reportIntervalFlag  int
 	rateLimitFlag       int
@@ -92,6 +95,7 @@ var (
 		"audit-file": func() string { return auditFileFlag },
 		"audit-url":  func() string { return auditURLFlag },
 		"config":     func() string { return configFilePath },
+		"t":          func() string { return trustedSubnetFlag },
 	}
 
 	// flagIntGetters мапит имя флага в функцию-геттер int значения.
@@ -125,6 +129,7 @@ func init() {
 	flag.StringVar(&cryptoKeyFlag, "crypto-key", "", "Path to RSA key file")
 	flag.StringVar(&auditFileFlag, "audit-file", "", "Path to audit log file")
 	flag.StringVar(&auditURLFlag, "audit-url", "", "URL to send audit logs via POST")
+	flag.StringVar(&trustedSubnetFlag, "t", "", "Trusted subnet (CIDR) for agent IP verification")
 
 	// Агентские флаги
 	flag.IntVar(&pollIntervalFlag, "p", 2, "Poll interval in seconds")
@@ -278,6 +283,7 @@ func ParseFlags() {
 		EnableGzip:    ptrBool(resolveBool("g", "ENABLE_GZIP", fc.EnableGzip, false)),
 		AuditFile:     resolveString("audit-file", "AUDIT_FILE", fc.AuditFile, ""),
 		AuditURL:      resolveString("audit-url", "AUDIT_URL", fc.AuditURL, ""),
+		TrustedSubnet: resolveString("t", "TRUSTED_SUBNET", fc.TrustedSubnet, ""),
 
 		// Агент
 		PollInterval:   resolveDuration("p", "POLL_INTERVAL", fc.PollInterval, 2),
@@ -340,6 +346,11 @@ func AuditFile() string {
 // AuditURL возвращает URL для аудита.
 func AuditURL() string {
 	return cfg.AuditURL
+}
+
+// TrustedSubnet возвращает доверенную подсеть (CIDR).
+func TrustedSubnet() string {
+	return cfg.TrustedSubnet
 }
 
 // === Геттеры (агент) ===
