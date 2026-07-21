@@ -11,6 +11,7 @@ import (
 	"github.com/GAV777/httpmetricalert/internal/proto"
 	"github.com/GAV777/httpmetricalert/pkg/retry"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -31,7 +32,7 @@ func NewClient(address, agentIP string) (*Client, error) {
 	var dialErr error
 
 	if err := retry.Do(ctx, cfg, func() error {
-		conn, dialErr = grpc.NewClient(address, grpc.WithInsecure())
+		conn, dialErr = grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		return dialErr
 	}); err != nil {
 		return nil, fmt.Errorf("grpc connect to %s: %w", address, err)
