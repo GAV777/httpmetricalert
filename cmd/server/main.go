@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,10 +13,12 @@ import (
 
 	"github.com/GAV777/httpmetricalert/internal/audit"
 	"github.com/GAV777/httpmetricalert/internal/config"
+	grpcservice "github.com/GAV777/httpmetricalert/internal/grpc"
 	"github.com/GAV777/httpmetricalert/internal/handlers"
 	"github.com/GAV777/httpmetricalert/internal/storage"
 	"github.com/GAV777/httpmetricalert/pkg/crypto"
 	"github.com/rs/zerolog"
+	"google.golang.org/grpc"
 )
 
 var (
@@ -61,6 +64,30 @@ func main() {
 		Handler: router,
 	}
 
+	// Запускаем gRPC-сервер, если указан адрес
+	var grpcSrv *grpc.Server
+	var grpcAddr string
+	if grpcAddress := config.GRPCAddress(); grpcAddress != "" {
+		grpcService := grpcservice.NewMetricsService(store)
+		grpcSrv = grpc.NewServer(
+			grpc.UnaryInterceptor(grpcService.UnaryServerInterceptor()),
+		)
+		grpcService.Register(grpcSrv)
+
+		grpcAddr = grpcAddress
+		go func() {
+			lis, err := net.Listen("tcp", grpcAddr)
+			if err != nil {
+				log.Printf("gRPC server failed: %v", err)
+				return
+			}
+			log.Printf("Starting gRPC server on %s", grpcAddr)
+			if err := grpcSrv.Serve(lis); err != nil {
+				log.Printf("gRPC server failed: %v", err)
+			}
+		}()
+	}
+
 	// Канал для сигналов завершения
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
@@ -84,6 +111,13 @@ func main() {
 	log.Println("Shutting down server...")
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Server forced to shutdown: %v", err)
+	}
+
+	// Graceful shutdown gRPC-сервера
+	if grpcSrv != nil {
+		log.Println("Shutting down gRPC server...")
+		grpcSrv.GracefulStop()
+		log.Println("gRPC server stopped")
 	}
 
 	// Финальное сохранение и очистка ресурсов

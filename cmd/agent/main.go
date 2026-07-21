@@ -21,6 +21,7 @@ import (
 
 	"github.com/GAV777/httpmetricalert/internal/agent"
 	"github.com/GAV777/httpmetricalert/internal/config"
+	grpcclient "github.com/GAV777/httpmetricalert/internal/grpcclient"
 	"github.com/GAV777/httpmetricalert/internal/model"
 	"github.com/GAV777/httpmetricalert/pkg/crypto"
 	"github.com/GAV777/httpmetricalert/pkg/hash"
@@ -255,6 +256,59 @@ func sendBatch(client *http.Client, baseURL string, batch []model.Metrics, pubKe
 	})
 }
 
+// senderGRPC — отправляет метрики через gRPC каждые reportInterval
+func senderGRPC(grpcClient *grpcclient.Client, store *agent.Store, interval time.Duration, stopCh <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+			gauges, counters := store.Snapshot()
+
+			var batch []model.Metrics
+			batch = append(batch, gauges...)
+			batch = append(batch, counters...)
+
+			if len(batch) == 0 {
+				continue
+			}
+
+			fmt.Printf("Sending batch via gRPC with %d metrics\n", len(batch))
+			ctx := context.Background()
+			if err := grpcClient.SendBatch(ctx, batch); err != nil {
+				fmt.Printf("Failed to send batch via gRPC: %v\n", err)
+			} else {
+				fmt.Printf("Successfully sent batch via gRPC with %d metrics\n", len(batch))
+			}
+		}
+	}
+}
+
+// sendFinalMetricsesGRPC отправляет финальный снимок метрик через gRPC
+func sendFinalMetricsesGRPC(grpcClient *grpcclient.Client, store *agent.Store) {
+	gauges, counters := store.Snapshot()
+
+	var batch []model.Metrics
+	batch = append(batch, gauges...)
+	batch = append(batch, counters...)
+
+	if len(batch) == 0 {
+		fmt.Println("No metrics to send on shutdown")
+		return
+	}
+
+	fmt.Printf("Sending final batch via gRPC with %d metrics\n", len(batch))
+	ctx := context.Background()
+	if err := grpcClient.SendBatch(ctx, batch); err != nil {
+		fmt.Printf("Failed to send final batch via gRPC: %v\n", err)
+	} else {
+		fmt.Printf("Successfully sent final batch via gRPC with %d metrics\n", len(batch))
+	}
+}
+
 // sender — отправляет метрики каждые reportInterval
 func sender(store *agent.Store, wp *workerPool, interval time.Duration, stopCh <-chan struct{}, pubKey *rsa.PublicKey) {
 	ticker := time.NewTicker(interval)
@@ -319,6 +373,8 @@ func main() {
 	pollDuration := time.Duration(config.PollInterval()) * time.Second
 	rateLimit := config.RateLimit()
 	cryptoKeyPath := config.CryptoKey()
+	useGRPC := config.ShouldUseGRPC()
+	grpcAddress := config.GRPCAddress()
 
 	if !strings.HasPrefix(serverAddress, "http://") && !strings.HasPrefix(serverAddress, "https://") {
 		serverAddress = "http://" + serverAddress
@@ -326,6 +382,7 @@ func main() {
 
 	fmt.Printf("Starting agent with server address: %s\n", serverAddress)
 	fmt.Printf("Report interval: %v, Poll interval: %v, Rate limit: %d\n", reportDuration, pollDuration, rateLimit)
+	fmt.Printf("Use gRPC: %v, gRPC address: %s\n", useGRPC, grpcAddress)
 
 	// Загружаем публичный ключ, если указан
 	var pubKey *rsa.PublicKey
@@ -339,19 +396,63 @@ func main() {
 	}
 
 	store := agent.NewStore()
-	client := &http.Client{}
 	agentIP := getLocalIP()
+
+	// Запускаем сборщики метрик в отдельных горутинах
+	stopCollect := make(chan struct{})
+	go runtimeCollector(store, pollDuration, stopCollect)
+	go gopsutilCollector(store, pollDuration, stopCollect)
+
+	if useGRPC {
+		runGRPCAgent(grpcAddress, agentIP, store, reportDuration, stopCollect)
+	} else {
+		runHTTPAgent(serverAddress, agentIP, store, reportDuration, stopCollect, pubKey, rateLimit)
+	}
+}
+
+// runGRPCAgent запускает агент с gRPC-транспортом
+func runGRPCAgent(grpcAddress, agentIP string, store *agent.Store, reportDuration time.Duration, stopCollect chan struct{}) {
+	if grpcAddress == "" {
+		log.Fatal("gRPC address is required when USE_GRPC is enabled")
+	}
+
+	grpcClient, err := grpcclient.NewClient(grpcAddress, agentIP)
+	if err != nil {
+		log.Fatalf("Failed to connect to gRPC server: %v", err)
+	}
+	defer grpcClient.Close()
+
+	fmt.Println("Connected to gRPC server")
+
+	// Запускаем gRPC-отправителя
+	go senderGRPC(grpcClient, store, reportDuration, stopCollect)
+
+	// Ждём сигнал завершения
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+	<-sigCh
+
+	fmt.Println("\nShutting down agent...")
+
+	// Останавливаем сборщики
+	close(stopCollect)
+
+	// Даём горутинам завершиться
+	time.Sleep(100 * time.Millisecond)
+
+	// Отправляем финальный снимок метрик через gRPC
+	sendFinalMetricsesGRPC(grpcClient, store)
+
+	fmt.Println("Agent stopped gracefully")
+}
+
+// runHTTPAgent запускает агент с HTTP-транспортом
+func runHTTPAgent(serverAddress, agentIP string, store *agent.Store, reportDuration time.Duration, stopCollect chan struct{}, pubKey *rsa.PublicKey, rateLimit int) {
+	client := &http.Client{}
 
 	// Запускаем worker pool
 	wp := newWorkerPool(rateLimit, client, serverAddress, agentIP)
 	wp.Start()
-
-	// Каналы остановки
-	stopCollect := make(chan struct{})
-
-	// Запускаем сборщики метрик в отдельных горутинах
-	go runtimeCollector(store, pollDuration, stopCollect)
-	go gopsutilCollector(store, pollDuration, stopCollect)
 
 	// Запускаем отправителя
 	go sender(store, wp, reportDuration, stopCollect, pubKey)
@@ -363,16 +464,16 @@ func main() {
 
 	fmt.Println("\nShutting down agent...")
 
-	// Останавливаем сборщики — они сделают финальный снимок при выходе из ticker
+	// Останавливаем сборщики
 	close(stopCollect)
 
 	// Даём горутинам завершиться
 	time.Sleep(100 * time.Millisecond)
 
-	// Отправляем финальный снимок метрик, накопленных к моменту сигнала
+	// Отправляем финальный снимок метрик
 	sendFinalMetricses(store, wp, pubKey)
 
-	// Останавливаем worker pool, дожидаясь pending задач
+	// Останавливаем worker pool
 	wp.Stop()
 
 	fmt.Println("Agent stopped gracefully")

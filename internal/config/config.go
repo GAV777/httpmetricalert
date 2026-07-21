@@ -34,11 +34,13 @@ type Config struct {
 	AuditFile     string `json:"audit_file,omitempty"`
 	AuditURL      string `json:"audit_url,omitempty"`
 	TrustedSubnet string `json:"trusted_subnet,omitempty"`
+	GRPCAddress   string `json:"grpc_address,omitempty"`
 
 	// Агент
-	PollInterval   int `json:"poll_interval,omitempty"`
-	ReportInterval int `json:"report_interval,omitempty"`
-	RateLimit      int `json:"rate_limit,omitempty"`
+	PollInterval   int  `json:"poll_interval,omitempty"`
+	ReportInterval int  `json:"report_interval,omitempty"`
+	RateLimit      int  `json:"rate_limit,omitempty"`
+	UseGRPC        bool `json:"use_grpc,omitempty"`
 }
 
 // fileConfig — структура для десериализации JSON-файла.
@@ -54,9 +56,11 @@ type fileConfig struct {
 	AuditFile      string `json:"audit_file"`
 	AuditURL       string `json:"audit_url"`
 	TrustedSubnet  string `json:"trusted_subnet"`
+	GRPCAddress    string `json:"grpc_address"`
 	PollInterval   string `json:"poll_interval"`
 	ReportInterval string `json:"report_interval"`
 	RateLimit      *int   `json:"rate_limit"`
+	UseGRPC        *bool  `json:"use_grpc"`
 }
 
 var (
@@ -81,6 +85,8 @@ var (
 	auditFileFlag       string
 	auditURLFlag        string
 	trustedSubnetFlag   string
+	grpcAddressFlag     string
+	useGRPCFlag         bool
 	pollIntervalFlag    int
 	reportIntervalFlag  int
 	rateLimitFlag       int
@@ -96,6 +102,7 @@ var (
 		"audit-url":  func() string { return auditURLFlag },
 		"config":     func() string { return configFilePath },
 		"t":          func() string { return trustedSubnetFlag },
+		"grpc":       func() string { return grpcAddressFlag },
 	}
 
 	// flagIntGetters мапит имя флага в функцию-геттер int значения.
@@ -109,8 +116,9 @@ var (
 
 	// flagBoolGetters мапит имя флага в функцию-геттер bool значения.
 	flagBoolGetters = map[string]func() bool{
-		"restore": func() bool { return restoreFlag },
-		"g":       func() bool { return gzipFlag },
+		"restore":  func() bool { return restoreFlag },
+		"g":        func() bool { return gzipFlag },
+		"use-grpc": func() bool { return useGRPCFlag },
 	}
 )
 
@@ -130,12 +138,14 @@ func init() {
 	flag.StringVar(&auditFileFlag, "audit-file", "", "Path to audit log file")
 	flag.StringVar(&auditURLFlag, "audit-url", "", "URL to send audit logs via POST")
 	flag.StringVar(&trustedSubnetFlag, "t", "", "Trusted subnet (CIDR) for agent IP verification")
+	flag.StringVar(&grpcAddressFlag, "grpc", "", "gRPC server address")
 
 	// Агентские флаги
 	flag.IntVar(&pollIntervalFlag, "p", 2, "Poll interval in seconds")
 	flag.IntVar(&reportIntervalFlag, "r", 10, "Report interval in seconds")
 	flag.IntVar(&reportIntervalFlag, "report-interval", 10, "Report interval in seconds (long form)")
 	flag.IntVar(&rateLimitFlag, "l", 1, "Max concurrent requests")
+	flag.BoolVar(&useGRPCFlag, "use-grpc", false, "Use gRPC instead of HTTP for metric submission")
 }
 
 // loadConfigFile загружает конфигурацию из JSON-файла по указанному пути.
@@ -284,11 +294,13 @@ func ParseFlags() {
 		AuditFile:     resolveString("audit-file", "AUDIT_FILE", fc.AuditFile, ""),
 		AuditURL:      resolveString("audit-url", "AUDIT_URL", fc.AuditURL, ""),
 		TrustedSubnet: resolveString("t", "TRUSTED_SUBNET", fc.TrustedSubnet, ""),
+		GRPCAddress:   resolveString("grpc", "GRPC_ADDRESS", fc.GRPCAddress, ""),
 
 		// Агент
 		PollInterval:   resolveDuration("p", "POLL_INTERVAL", fc.PollInterval, 2),
 		ReportInterval: resolveDuration("report-interval", "REPORT_INTERVAL", fc.ReportInterval, 10),
 		RateLimit:      resolveInt("l", "RATE_LIMIT", fc.RateLimit, 1),
+		UseGRPC:        resolveBool("use-grpc", "USE_GRPC", fc.UseGRPC, false),
 	}
 }
 
@@ -353,6 +365,11 @@ func TrustedSubnet() string {
 	return cfg.TrustedSubnet
 }
 
+// GRPCAddress возвращает адрес gRPC-сервера.
+func GRPCAddress() string {
+	return cfg.GRPCAddress
+}
+
 // === Геттеры (агент) ===
 
 // PollInterval возвращает интервал опроса метрик в секундах.
@@ -368,6 +385,11 @@ func ReportInterval() int {
 // RateLimit возвращает лимит параллельных запросов.
 func RateLimit() int {
 	return cfg.RateLimit
+}
+
+// ShouldUseGRPC возвращает флаг использования gRPC.
+func ShouldUseGRPC() bool {
+	return cfg.UseGRPC
 }
 
 // === Утилиты ===
