@@ -7,23 +7,25 @@ import (
 
 // workerPool — пул воркеров для отправки метрик
 type workerPool struct {
-	tasks   chan func()
-	client  *http.Client
-	baseURL string
-	agentIP string
-	size    int
-	wg      sync.WaitGroup
-	stopCh  chan struct{}
+	tasks     chan func()
+	client    *http.Client
+	baseURL   string
+	agentIP   string
+	secretKey string
+	size      int
+	wg        sync.WaitGroup
+	stopCh    chan struct{}
 }
 
-func newWorkerPool(size int, client *http.Client, baseURL string, agentIP string) *workerPool {
+func newWorkerPool(size int, client *http.Client, baseURL string, agentIP string, secretKey string) *workerPool {
 	return &workerPool{
-		tasks:   make(chan func(), size*2),
-		client:  client,
-		baseURL: baseURL,
-		agentIP: agentIP,
-		size:    size,
-		stopCh:  make(chan struct{}),
+		tasks:     make(chan func(), size*2),
+		client:    client,
+		baseURL:   baseURL,
+		agentIP:   agentIP,
+		secretKey: secretKey,
+		size:      size,
+		stopCh:    make(chan struct{}),
 	}
 }
 
@@ -51,7 +53,10 @@ func (wp *workerPool) Submit(task func()) {
 func (wp *workerPool) Stop() {
 	close(wp.stopCh)
 
-	// Drain оставшихся задач из канала — выполняем их перед полным выходом
+	// Ждём завершения всех воркеров
+	wp.wg.Wait()
+
+	// Drain оставшихся задач из канала — выполняем их после выхода воркеров
 drainLoop:
 	for {
 		select {
@@ -61,6 +66,4 @@ drainLoop:
 			break drainLoop
 		}
 	}
-
-	wp.wg.Wait()
 }

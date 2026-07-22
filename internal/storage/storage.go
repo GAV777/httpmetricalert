@@ -16,9 +16,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GAV777/httpmetricalert/internal/config"
 	"github.com/GAV777/httpmetricalert/internal/model"
 )
+
+// storageParams хранит параметры для инициализации хранилища.
+type storageParams struct {
+	dsn           string
+	storeFile     string
+	storeInterval int
+	restore       bool
+}
 
 // ErrDatabaseNotAvailable возвращается при попытке пинговать БД,
 // когда подключение к PostgreSQL было настроено, но установить его не удалось.
@@ -27,50 +34,59 @@ var ErrDatabaseNotAvailable = errors.New("database is not available")
 // MemStorage — потокобезопасное in-memory хранилище метрик
 // с поддержкой периодического сохранения в файл.
 type MemStorage struct {
-	data        map[string]model.Metrics
-	mu          sync.RWMutex
-	dbAttempted bool
+	data          map[string]model.Metrics
+	mu            sync.RWMutex
+	dbAttempted   bool
+	storeFile     string
+	storeInterval int
 }
 
 // NewStorage создаёт хранилище метрик, выбирая тип по конфигурации:
 // PostgreSQL при наличии DSN, файловое или in-memory в качестве fallback.
-func NewStorage() MetricsStorage {
-	dsn := config.DatabaseDSN()
+func NewStorage(dsn, storeFile string, storeInterval int, restore bool) MetricsStorage {
+	params := storageParams{
+		dsn:           dsn,
+		storeFile:     storeFile,
+		storeInterval: storeInterval,
+		restore:       restore,
+	}
 
-	if dsn != "" {
-		storage, err := NewPostgresStorage(dsn)
+	if params.dsn != "" {
+		storage, err := NewPostgresStorage(params.dsn)
 		if err != nil {
 			log.Printf("Failed to connect to PostgreSQL: %v", err)
 			log.Println("Falling back to file storage")
-			return newFileStorage()
+			return newFileStorage(params)
 		}
 		log.Println("Using PostgreSQL storage")
 		return storage
 	}
 
 	log.Println("Using in-memory storage")
-	return newMemStorageOnly()
+	return newMemStorageOnly(params)
 }
 
 // initMemStorage инициализирует хранилище: загружает данные и запускает периодическое сохранение
-func initMemStorage(dbAttempted bool) *MemStorage {
+func initMemStorage(params storageParams, dbAttempted bool) *MemStorage {
 	storage := &MemStorage{
-		data:        make(map[string]model.Metrics),
-		dbAttempted: dbAttempted,
+		data:          make(map[string]model.Metrics),
+		dbAttempted:   dbAttempted,
+		storeFile:     params.storeFile,
+		storeInterval: params.storeInterval,
 	}
 
-	if config.ShouldRestore() {
+	if params.restore {
 		_ = storage.Load()
 	}
 
 	// В синхронном режиме (interval == 0) сохранение происходит после каждой операции
-	if config.StoreInterval() == 0 {
+	if params.storeInterval == 0 {
 		return storage
 	}
 
 	// Запускаем горутину для периодического сохранения
 	go func() {
-		ticker := time.NewTicker(time.Duration(config.StoreInterval()) * time.Second)
+		ticker := time.NewTicker(time.Duration(params.storeInterval) * time.Second)
 		defer ticker.Stop()
 
 		for range ticker.C {
@@ -82,22 +98,26 @@ func initMemStorage(dbAttempted bool) *MemStorage {
 }
 
 // newFileStorage создаёт хранилище с сохранением в файл
-func newFileStorage() *MemStorage {
-	return initMemStorage(true) // БД была настроена, но подключение не удалось
+func newFileStorage(params storageParams) *MemStorage {
+	return initMemStorage(params, true) // БД была настроена, но подключение не удалось
 }
 
 // newMemStorageOnly создаёт хранилище только в памяти
-func newMemStorageOnly() *MemStorage {
-	return initMemStorage(false)
+func newMemStorageOnly(params storageParams) *MemStorage {
+	return initMemStorage(params, false)
 }
 
 // NewMemStorage создаёт пустое in-memory хранилище метрик.
 func NewMemStorage() *MemStorage {
-	return initMemStorage(false)
+	return initMemStorage(storageParams{}, false)
 }
 
 // Save записывает все метрики в файл, указанный в конфигурации.
 func (s *MemStorage) Save() error {
+	if s.storeFile == "" {
+		return nil // нет файла для сохранения
+	}
+
 	s.mu.RLock()
 	data := make([]model.Metrics, 0, len(s.data))
 	for _, v := range s.data {
@@ -105,7 +125,7 @@ func (s *MemStorage) Save() error {
 	}
 	s.mu.RUnlock()
 
-	file, err := os.OpenFile(config.FileStoragePath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	file, err := os.OpenFile(s.storeFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		log.Printf("Failed to open file for saving: %v", err)
 		return err
@@ -123,9 +143,13 @@ func (s *MemStorage) Save() error {
 
 // Load загружает метрики из файла, указанного в конфигурации.
 func (s *MemStorage) Load() error {
-	file, err := os.Open(config.FileStoragePath())
+	if s.storeFile == "" {
+		return nil
+	}
+
+	file, err := os.Open(s.storeFile)
 	if os.IsNotExist(err) {
-		log.Printf("Storage file not found: %s", config.FileStoragePath())
+		log.Printf("Storage file not found: %s", s.storeFile)
 		return nil
 	} else if err != nil {
 		log.Printf("Failed to open storage file: %v", err)
@@ -151,23 +175,24 @@ func (s *MemStorage) Load() error {
 }
 
 // SetGauge устанавливает значение gauge-метрики.
-func (s *MemStorage) SetGauge(name string, value float64) {
+func (s *MemStorage) SetGauge(name string, value float64) error {
 	s.mu.Lock()
 	s.data[name] = model.Metrics{
 		ID:    name,
 		MType: "gauge",
 		Value: &value,
 	}
-	needSave := config.StoreInterval() == 0
+	needSave := s.storeInterval == 0
 	s.mu.Unlock()
 
 	if needSave {
-		s.Save()
+		return s.Save()
 	}
+	return nil
 }
 
 // SetCounter устанавливает значение counter-метрики с инкрементом.
-func (s *MemStorage) SetCounter(name string, delta int64) {
+func (s *MemStorage) SetCounter(name string, delta int64) error {
 	s.mu.Lock()
 	existing, ok := s.data[name]
 	var newValue int64
@@ -182,12 +207,13 @@ func (s *MemStorage) SetCounter(name string, delta int64) {
 		MType: "counter",
 		Delta: &newValue,
 	}
-	needSave := config.StoreInterval() == 0
+	needSave := s.storeInterval == 0
 	s.mu.Unlock()
 
 	if needSave {
-		s.Save()
+		return s.Save()
 	}
+	return nil
 }
 
 // GetGauge возвращает значение gauge-метрики по имени.
@@ -270,7 +296,7 @@ func (s *MemStorage) UpdateBatch(metrics []model.Metrics) error {
 	}
 
 	// В синхронном режиме сохраняем после батча
-	if config.StoreInterval() == 0 {
+	if s.storeInterval == 0 {
 		s.mu.Unlock()
 		_ = s.Save()
 		s.mu.Lock()

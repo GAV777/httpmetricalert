@@ -304,116 +304,246 @@ func ParseFlags() {
 	}
 }
 
-// === Геттеры (общие) ===
+// Loader загружает конфигурацию из флагов, env и JSON-файла.
+// Потокобезопасен, может использоваться в тестах с изолированным FlagSet.
+type Loader struct {
+	fs *flag.FlagSet
+}
+
+// NewLoader создаёт новый Loader. Если fs == nil, используется flag.CommandLine.
+func NewLoader(fs *flag.FlagSet) *Loader {
+	if fs == nil {
+		fs = flag.CommandLine
+	}
+	return &Loader{fs: fs}
+}
+
+// Load разбирает флаги, загружает JSON-файл и возвращает Config.
+func (l *Loader) Load() (*Config, error) {
+	flagSet := make(map[string]bool)
+
+	// Записываем явно установленные флаги
+	l.fs.Visit(func(f *flag.Flag) {
+		name := f.Name
+		if name == "c" {
+			name = "config"
+		}
+		flagSet[name] = true
+	})
+
+	// Определяем путь к файлу: флаг > env CONFIG
+	// configFilePath уже заполнен через flag.*Var в init()
+	path := configFilePath
+	if path == "" {
+		path = os.Getenv("CONFIG")
+	}
+
+	// Загружаем файл конфигурации
+	fc, err := loadConfigFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("load config file: %w", err)
+	}
+	if fc == nil {
+		fc = &fileConfig{}
+	}
+
+	// Разрешаем все значения
+	cfg := &Config{
+		// Общие
+		Address:     resolveStringWithMap("a", "ADDRESS", fc.Address, "localhost:8080", flagSet),
+		DatabaseDSN: resolveStringWithMap("d", "DATABASE_DSN", fc.DatabaseDSN, "", flagSet),
+		CryptoKey:   resolveStringWithMap("crypto-key", "CRYPTO_KEY", fc.CryptoKey, "", flagSet),
+		Key:         resolveStringWithMap("k", "KEY", fc.Key, "", flagSet),
+
+		// Сервер
+		StoreInterval: resolveDurationWithMap("i", "STORE_INTERVAL", fc.StoreInterval, 300, flagSet),
+		StoreFile:     resolveStringWithMap("f", "FILE_STORAGE_PATH", fc.StoreFile, "/tmp/metrics.json", flagSet),
+		Restore:       ptrBool(resolveBoolWithMap("restore", "RESTORE", fc.Restore, true, flagSet)),
+		EnableGzip:    ptrBool(resolveBoolWithMap("g", "ENABLE_GZIP", fc.EnableGzip, false, flagSet)),
+		AuditFile:     resolveStringWithMap("audit-file", "AUDIT_FILE", fc.AuditFile, "", flagSet),
+		AuditURL:      resolveStringWithMap("audit-url", "AUDIT_URL", fc.AuditURL, "", flagSet),
+		TrustedSubnet: resolveStringWithMap("t", "TRUSTED_SUBNET", fc.TrustedSubnet, "", flagSet),
+		GRPCAddress:   resolveStringWithMap("grpc", "GRPC_ADDRESS", fc.GRPCAddress, "", flagSet),
+
+		// Агент
+		PollInterval:   resolveDurationWithMap("p", "POLL_INTERVAL", fc.PollInterval, 2, flagSet),
+		ReportInterval: resolveDurationWithMap("report-interval", "REPORT_INTERVAL", fc.ReportInterval, 10, flagSet),
+		RateLimit:      resolveIntWithMap("l", "RATE_LIMIT", fc.RateLimit, 1, flagSet),
+		UseGRPC:        resolveBoolWithMap("use-grpc", "USE_GRPC", fc.UseGRPC, false, flagSet),
+	}
+
+	return cfg, nil
+}
+
+// === Resolve-функции с явной передачей flagSet ===
+
+func resolveStringWithMap(flagName, envKey, fileVal, defaultValue string, flagSet map[string]bool) string {
+	if flagSet[flagName] {
+		if getter, ok := flagStringGetters[flagName]; ok {
+			return getter()
+		}
+	}
+	if val := os.Getenv(envKey); val != "" {
+		return val
+	}
+	if fileVal != "" {
+		return fileVal
+	}
+	return defaultValue
+}
+
+func resolveIntWithMap(flagName, envKey string, fileVal *int, defaultValue int, flagSet map[string]bool) int {
+	if flagSet[flagName] {
+		if getter, ok := flagIntGetters[flagName]; ok {
+			return getter()
+		}
+	}
+	if val := os.Getenv(envKey); val != "" {
+		if n, err := strconv.Atoi(val); err == nil {
+			return n
+		}
+		if n := parseDurationSeconds(val); n != 0 {
+			return n
+		}
+	}
+	if fileVal != nil {
+		return *fileVal
+	}
+	return defaultValue
+}
+
+func resolveDurationWithMap(flagName, envKey string, fileVal string, defaultValue int, flagSet map[string]bool) int {
+	if flagSet[flagName] {
+		if getter, ok := flagIntGetters[flagName]; ok {
+			return getter()
+		}
+	}
+	if val := os.Getenv(envKey); val != "" {
+		if n := parseDurationSeconds(val); n != 0 {
+			return n
+		}
+	}
+	if fileVal != "" {
+		if n := parseDurationSeconds(fileVal); n != 0 {
+			return n
+		}
+	}
+	return defaultValue
+}
+
+func resolveBoolWithMap(flagName, envKey string, fileVal *bool, defaultValue bool, flagSet map[string]bool) bool {
+	if flagSet[flagName] {
+		if getter, ok := flagBoolGetters[flagName]; ok {
+			return getter()
+		}
+	}
+	if val := os.Getenv(envKey); val != "" {
+		return parseBool(val)
+	}
+	if fileVal != nil {
+		return *fileVal
+	}
+	return defaultValue
+}
+
+// === Методы на Config (удобные геттеры) ===
 
 // ServerAddress возвращает адрес сервера, очищенный от протокола.
-func ServerAddress() string {
-	cleanAddr := strings.TrimPrefix(cfg.Address, "http://")
+func (c *Config) ServerAddress() string {
+	cleanAddr := strings.TrimPrefix(c.Address, "http://")
 	cleanAddr = strings.TrimPrefix(cleanAddr, "https://")
 	return cleanAddr
 }
 
-// GetSecretKey возвращает секретный ключ для HMAC-SHA256.
-func GetSecretKey() string {
-	return cfg.Key
-}
-
-// CryptoKey возвращает путь к файлу RSA-ключа.
-func CryptoKey() string {
-	return cfg.CryptoKey
-}
-
-// === Геттеры (сервер) ===
-
-// StoreInterval возвращает интервал сохранения в секундах.
-func StoreInterval() int {
-	return cfg.StoreInterval
-}
-
-// FileStoragePath возвращает путь к файлу хранилища.
-func FileStoragePath() string {
-	return cfg.StoreFile
-}
-
 // ShouldRestore возвращает флаг восстановления из файла.
-func ShouldRestore() bool {
-	return cfg.Restore != nil && *cfg.Restore
+func (c *Config) ShouldRestore() bool {
+	return c.Restore != nil && *c.Restore
 }
 
 // GzipEnabled возвращает флаг gzip-сжатия.
-func GzipEnabled() bool {
-	return cfg.EnableGzip != nil && *cfg.EnableGzip
+func (c *Config) GzipEnabled() bool {
+	return c.EnableGzip != nil && *c.EnableGzip
 }
 
-// DatabaseDSN возвращает DSN PostgreSQL.
-func DatabaseDSN() string {
-	return cfg.DatabaseDSN
-}
-
-// AuditFile возвращает путь к файлу аудита.
-func AuditFile() string {
-	return cfg.AuditFile
-}
-
-// AuditURL возвращает URL для аудита.
-func AuditURL() string {
-	return cfg.AuditURL
-}
-
-// TrustedSubnet возвращает доверенную подсеть (CIDR).
-func TrustedSubnet() string {
-	return cfg.TrustedSubnet
-}
-
-// GRPCAddress возвращает адрес gRPC-сервера.
-func GRPCAddress() string {
-	return cfg.GRPCAddress
-}
-
-// === Геттеры (агент) ===
-
-// PollInterval возвращает интервал опроса метрик в секундах.
-func PollInterval() int {
-	return cfg.PollInterval
-}
-
-// ReportInterval возвращает интервал отправки отчётов в секундах.
-func ReportInterval() int {
-	return cfg.ReportInterval
-}
-
-// RateLimit возвращает лимит параллельных запросов.
-func RateLimit() int {
-	return cfg.RateLimit
-}
-
-// ShouldUseGRPC возвращает флаг использования gRPC.
-func ShouldUseGRPC() bool {
-	return cfg.UseGRPC
-}
-
-// === Утилиты ===
-
-// ValidateServerAddress проверяет корректность адреса сервера.
-func ValidateServerAddress() {
-	cleanAddr := ServerAddress()
-
+// Validate проверяет корректность адреса сервера.
+func (c *Config) Validate() error {
+	cleanAddr := c.ServerAddress()
 	if cleanAddr == "" {
-		log.Fatal("Invalid address: ADDRESS cannot be empty")
+		return fmt.Errorf("invalid address: ADDRESS cannot be empty")
 	}
-
 	if !strings.Contains(cleanAddr, ":") {
-		log.Fatal("Invalid address format: expected host:port or :port")
+		return fmt.Errorf("invalid address format: expected host:port or :port")
 	}
-
-	remainingArgs := flag.Args()
-	if len(remainingArgs) > 0 {
-		log.Fatalf("неизвестные аргументы командной строки: %v", remainingArgs)
-	}
+	return nil
 }
 
 func ptrBool(b bool) *bool {
 	return &b
+}
+
+// === Геттеры обратной совместимости (используют глобальный cfg) ===
+
+// Deprecated: use cfg.GetSecretKey() on the Config returned by Loader.Load().
+func GetSecretKey() string { return cfg.Key }
+
+// Deprecated: use cfg.CryptoKey() on the Config returned by Loader.Load().
+func CryptoKey() string { return cfg.CryptoKey }
+
+// Deprecated: use cfg.StoreInterval() on the Config returned by Loader.Load().
+func StoreInterval() int { return cfg.StoreInterval }
+
+// Deprecated: use cfg.StoreFile on the Config returned by Loader.Load().
+func FileStoragePath() string { return cfg.StoreFile }
+
+// Deprecated: use cfg.ShouldRestore() on the Config returned by Loader.Load().
+func ShouldRestore() bool { return cfg.ShouldRestore() }
+
+// Deprecated: use cfg.GzipEnabled() on the Config returned by Loader.Load().
+func GzipEnabled() bool { return cfg.GzipEnabled() }
+
+// Deprecated: use cfg.DatabaseDSN on the Config returned by Loader.Load().
+func DatabaseDSN() string { return cfg.DatabaseDSN }
+
+// Deprecated: use cfg.AuditFile on the Config returned by Loader.Load().
+func AuditFile() string { return cfg.AuditFile }
+
+// Deprecated: use cfg.AuditURL on the Config returned by Loader.Load().
+func AuditURL() string { return cfg.AuditURL }
+
+// Deprecated: use cfg.TrustedSubnet on the Config returned by Loader.Load().
+func TrustedSubnet() string { return cfg.TrustedSubnet }
+
+// Deprecated: use cfg.GRPCAddress on the Config returned by Loader.Load().
+func GRPCAddress() string { return cfg.GRPCAddress }
+
+// Deprecated: use cfg.PollInterval() on the Config returned by Loader.Load().
+func PollInterval() int { return cfg.PollInterval }
+
+// Deprecated: use cfg.ReportInterval() on the Config returned by Loader.Load().
+func ReportInterval() int { return cfg.ReportInterval }
+
+// Deprecated: use cfg.RateLimit on the Config returned by Loader.Load().
+func RateLimit() int { return cfg.RateLimit }
+
+// Deprecated: use cfg.ShouldUseGRPC() on the Config returned by Loader.Load().
+func ShouldUseGRPC() bool { return cfg.UseGRPC }
+
+// Deprecated: use cfg.ServerAddress() on the Config returned by Loader.Load().
+func ServerAddress() string { return cfg.ServerAddress() }
+
+// Deprecated: use cfg.Validate() on the Config returned by Loader.Load().
+func ValidateServerAddress() {
+	if err := cfg.Validate(); err != nil {
+		remainingArgs := flag.Args()
+		if len(remainingArgs) > 0 {
+			log.Fatalf("неизвестные аргументы командной строки: %v", remainingArgs)
+		}
+		log.Fatal(err)
+	}
+	remainingArgs := flag.Args()
+	if len(remainingArgs) > 0 {
+		log.Fatalf("неизвестные аргументы командной строки: %v", remainingArgs)
+	}
 }
 
 // parseDurationSeconds парсит строку как duration и возвращает секунды.

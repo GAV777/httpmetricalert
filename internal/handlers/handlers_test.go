@@ -915,8 +915,8 @@ func TestPingDB_DatabaseNotAvailable(t *testing.T) {
 // Вспомогательный storage который всегда возвращает ошибку Ping
 type memStorageWithDBError struct{}
 
-func (m *memStorageWithDBError) SetGauge(name string, value float64)       {}
-func (m *memStorageWithDBError) SetCounter(name string, delta int64)       {}
+func (m *memStorageWithDBError) SetGauge(name string, value float64) error { return nil }
+func (m *memStorageWithDBError) SetCounter(name string, delta int64) error { return nil }
 func (m *memStorageWithDBError) GetGauge(name string) (float64, bool)      { return 0, false }
 func (m *memStorageWithDBError) GetCounter(name string) (int64, bool)      { return 0, false }
 func (m *memStorageWithDBError) GetAll() []model.Metrics                   { return nil }

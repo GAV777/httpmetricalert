@@ -10,21 +10,21 @@ import (
 
 func TestNewStorageWithoutDSN(t *testing.T) {
 	// Без DSN должно создаваться in-memory хранилище
-	storage := NewStorage()
+	storage := NewStorage("", "/tmp/test.json", 300, true)
 	if storage == nil {
 		t.Fatal("expected non-nil storage")
 	}
 }
 
 func TestNewFileStorageCreation(t *testing.T) {
-	storage := newFileStorage()
+	storage := newFileStorage(storageParams{storeFile: "/tmp/test.json", storeInterval: 300, restore: true})
 	if storage == nil {
 		t.Fatal("expected non-nil file storage")
 	}
 }
 
 func TestNewMemStorageOnlyCreation(t *testing.T) {
-	storage := newMemStorageOnly()
+	storage := newMemStorageOnly(storageParams{storeFile: "/tmp/test.json", storeInterval: 300})
 	if storage == nil {
 		t.Fatal("expected non-nil storage")
 	}

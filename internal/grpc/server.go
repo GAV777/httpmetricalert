@@ -7,7 +7,6 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/GAV777/httpmetricalert/internal/config"
 	"github.com/GAV777/httpmetricalert/internal/model"
 	"github.com/GAV777/httpmetricalert/internal/proto"
 	"github.com/GAV777/httpmetricalert/internal/storage"
@@ -25,11 +24,11 @@ type MetricsService struct {
 }
 
 // NewMetricsService creates a new MetricsService.
-func NewMetricsService(store storage.MetricsStorage) *MetricsService {
+func NewMetricsService(store storage.MetricsStorage, trustedSubnet string) *MetricsService {
 	svc := &MetricsService{store: store}
 
-	if subnet := config.TrustedSubnet(); subnet != "" {
-		_, ipNet, err := net.ParseCIDR(subnet)
+	if trustedSubnet != "" {
+		_, ipNet, err := net.ParseCIDR(trustedSubnet)
 		if err != nil {
 			// Логирование ошибки парсинга подсети
 			// Сервер продолжит работу без проверки подсети

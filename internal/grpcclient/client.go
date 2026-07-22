@@ -4,11 +4,11 @@ package grpcclient
 import (
 	"context"
 	"fmt"
-	"net"
 	"time"
 
 	"github.com/GAV777/httpmetricalert/internal/model"
 	"github.com/GAV777/httpmetricalert/internal/proto"
+	"github.com/GAV777/httpmetricalert/pkg/netutil"
 	"github.com/GAV777/httpmetricalert/pkg/retry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -78,11 +78,10 @@ func (c *Client) SendBatch(ctx context.Context, metrics []model.Metrics) error {
 	}
 
 	// Добавляем IP-адрес в метаданные
-	md := metadata.New(nil)
+	ctxWithMD := ctx
 	if c.agentIP != "" {
-		md.Set("x-real-ip", c.agentIP)
+		ctxWithMD = metadata.NewOutgoingContext(ctx, metadata.Pairs("x-real-ip", c.agentIP))
 	}
-	ctxWithMD := metadata.NewOutgoingContext(ctx, md)
 
 	cfg := retry.DefaultConfig()
 	return retry.Do(ctxWithMD, cfg, func() error {
@@ -101,16 +100,5 @@ func (c *Client) Close() error {
 
 // GetLocalIP returns the local IP address of the host.
 func GetLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return ""
-	}
-	for _, addr := range addrs {
-		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
-			if ipNet.IP.To4() != nil {
-				return ipNet.IP.String()
-			}
-		}
-	}
-	return ""
+	return netutil.LocalIP()
 }

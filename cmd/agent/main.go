@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"math/rand"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,6 +24,7 @@ import (
 	"github.com/GAV777/httpmetricalert/internal/model"
 	"github.com/GAV777/httpmetricalert/pkg/crypto"
 	"github.com/GAV777/httpmetricalert/pkg/hash"
+	"github.com/GAV777/httpmetricalert/pkg/netutil"
 	"github.com/GAV777/httpmetricalert/pkg/retry"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/mem"
@@ -116,43 +116,56 @@ func gopsutilCollector(store *agent.Store, interval time.Duration, stopCh <-chan
 	}
 }
 
-// worker — отправляет одну метрику
-func sendMetric(client *http.Client, baseURL string, metric model.Metrics, pubKey *rsa.PublicKey, agentIP string) error {
-	data, err := json.Marshal(metric)
-	if err != nil {
-		return fmt.Errorf("marshal metric %s: %w", metric.ID, err)
+// requestPayload описывает, что отправлять и куда
+type requestPayload struct {
+	data      []byte // JSON до шифрования/сжатия (для HMAC)
+	body      []byte // Готовое тело запроса
+	url       string
+	useCrypto bool
+	secretKey string // Для HMAC-подписи
+	errLabel  string // "metric %s" или "batch" для ошибок
+}
+
+// buildRequest подготавливает тело запроса: marshal → encrypt/gzip
+func buildRequest(jsonData []byte, pubKey *rsa.PublicKey, url, secretKey, errLabel string) (requestPayload, error) {
+	payload := requestPayload{
+		data:      jsonData,
+		url:       url,
+		useCrypto: pubKey != nil,
+		secretKey: secretKey,
+		errLabel:  errLabel,
 	}
 
-	var bodyData []byte
-	useCrypto := pubKey != nil
-
-	if useCrypto {
-		encrypted, err := crypto.Encrypt(pubKey, data)
+	if pubKey != nil {
+		encrypted, err := crypto.Encrypt(pubKey, jsonData)
 		if err != nil {
-			return fmt.Errorf("encrypt metric %s: %w", metric.ID, err)
+			return payload, fmt.Errorf("encrypt %s: %w", errLabel, err)
 		}
-		bodyData = encrypted
+		payload.body = encrypted
 	} else {
 		var buf bytes.Buffer
 		gz := gzip.NewWriter(&buf)
-		if _, err := gz.Write(data); err != nil {
+		if _, err := gz.Write(jsonData); err != nil {
 			gz.Close()
-			return fmt.Errorf("compress metric %s: %w", metric.ID, err)
+			return payload, fmt.Errorf("compress %s: %w", errLabel, err)
 		}
 		gz.Close()
-		bodyData = buf.Bytes()
+		payload.body = buf.Bytes()
 	}
 
-	url := fmt.Sprintf("%s/update", baseURL)
+	return payload, nil
+}
 
+// doRequest выполняет HTTP-запрос с retry, заголовками и HMAC
+func doRequest(client *http.Client, payload requestPayload, agentIP string) error {
 	cfg := retry.DefaultConfig()
 	return retry.Do(context.Background(), cfg, func() error {
-		req, err := http.NewRequest("POST", url, bytes.NewReader(bodyData))
+		req, err := http.NewRequest("POST", payload.url, bytes.NewReader(payload.body))
 		if err != nil {
 			return err
 		}
 
-		if useCrypto {
+		if payload.useCrypto {
 			req.Header.Set("Content-Type", "application/octet-stream")
 			req.Header.Set("X-Crypto", "rsa")
 		} else {
@@ -165,8 +178,8 @@ func sendMetric(client *http.Client, baseURL string, metric model.Metrics, pubKe
 			req.Header.Set("X-Real-IP", agentIP)
 		}
 
-		if key := config.GetSecretKey(); key != "" && !useCrypto {
-			h := hash.Sign(string(data), key)
+		if key := payload.secretKey; key != "" && !payload.useCrypto {
+			h := hash.Sign(string(payload.data), key)
 			req.Header.Set("HashSHA256", h)
 		}
 
@@ -184,8 +197,23 @@ func sendMetric(client *http.Client, baseURL string, metric model.Metrics, pubKe
 	})
 }
 
+// sendMetric отправляет одну метрику
+func sendMetric(client *http.Client, baseURL string, metric model.Metrics, pubKey *rsa.PublicKey, agentIP, secretKey string) error {
+	data, err := json.Marshal(metric)
+	if err != nil {
+		return fmt.Errorf("marshal metric %s: %w", metric.ID, err)
+	}
+
+	payload, err := buildRequest(data, pubKey, fmt.Sprintf("%s/update", baseURL), secretKey, fmt.Sprintf("metric %s", metric.ID))
+	if err != nil {
+		return err
+	}
+
+	return doRequest(client, payload, agentIP)
+}
+
 // sendBatch отправляет батч метрик
-func sendBatch(client *http.Client, baseURL string, batch []model.Metrics, pubKey *rsa.PublicKey, agentIP string) error {
+func sendBatch(client *http.Client, baseURL string, batch []model.Metrics, pubKey *rsa.PublicKey, agentIP, secretKey string) error {
 	if len(batch) == 0 {
 		return nil
 	}
@@ -195,65 +223,12 @@ func sendBatch(client *http.Client, baseURL string, batch []model.Metrics, pubKe
 		return fmt.Errorf("marshal batch: %w", err)
 	}
 
-	var bodyData []byte
-	useCrypto := pubKey != nil
-
-	if useCrypto {
-		encrypted, err := crypto.Encrypt(pubKey, data)
-		if err != nil {
-			return fmt.Errorf("encrypt batch: %w", err)
-		}
-		bodyData = encrypted
-	} else {
-		var buf bytes.Buffer
-		gz := gzip.NewWriter(&buf)
-		if _, err := gz.Write(data); err != nil {
-			gz.Close()
-			return fmt.Errorf("compress batch: %w", err)
-		}
-		gz.Close()
-		bodyData = buf.Bytes()
+	payload, err := buildRequest(data, pubKey, fmt.Sprintf("%s/updates/", baseURL), secretKey, "batch")
+	if err != nil {
+		return err
 	}
 
-	url := fmt.Sprintf("%s/updates/", baseURL)
-
-	cfg := retry.DefaultConfig()
-	return retry.Do(context.Background(), cfg, func() error {
-		req, err := http.NewRequest("POST", url, bytes.NewReader(bodyData))
-		if err != nil {
-			return err
-		}
-
-		if useCrypto {
-			req.Header.Set("Content-Type", "application/octet-stream")
-			req.Header.Set("X-Crypto", "rsa")
-		} else {
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Content-Encoding", "gzip")
-		}
-		req.Header.Set("Accept-Encoding", "gzip")
-
-		if agentIP != "" {
-			req.Header.Set("X-Real-IP", agentIP)
-		}
-
-		if key := config.GetSecretKey(); key != "" && !useCrypto {
-			h := hash.Sign(string(data), key)
-			req.Header.Set("HashSHA256", h)
-		}
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("server %d: %s", resp.StatusCode, string(body))
-		}
-		return nil
-	})
+	return doRequest(client, payload, agentIP)
 }
 
 // senderGRPC — отправляет метрики через gRPC каждые reportInterval
@@ -287,8 +262,8 @@ func senderGRPC(grpcClient *grpcclient.Client, store *agent.Store, interval time
 	}
 }
 
-// sendFinalMetricsesGRPC отправляет финальный снимок метрик через gRPC
-func sendFinalMetricsesGRPC(grpcClient *grpcclient.Client, store *agent.Store) {
+// sendFinalMetricsGRPC отправляет финальный снимок метрик через gRPC
+func sendFinalMetricsGRPC(grpcClient *grpcclient.Client, store *agent.Store) {
 	gauges, counters := store.Snapshot()
 
 	var batch []model.Metrics
@@ -332,7 +307,7 @@ func sender(store *agent.Store, wp *workerPool, interval time.Duration, stopCh <
 
 			fmt.Printf("Sending batch with %d metrics\n", len(batch))
 			wp.Submit(func() {
-				if err := sendBatch(wp.client, wp.baseURL, batch, pubKey, wp.agentIP); err != nil {
+				if err := sendBatch(wp.client, wp.baseURL, batch, pubKey, wp.agentIP, wp.secretKey); err != nil {
 					fmt.Printf("Failed to send batch: %v\n", err)
 				} else {
 					fmt.Printf("Successfully sent batch with %d metrics\n", len(batch))
@@ -342,8 +317,8 @@ func sender(store *agent.Store, wp *workerPool, interval time.Duration, stopCh <
 	}
 }
 
-// sendFinalMetricses отправляет финальный снимок метрик перед остановкой
-func sendFinalMetricses(store *agent.Store, wp *workerPool, pubKey *rsa.PublicKey) {
+// sendFinalMetrics отправляет финальный снимок метрик перед остановкой
+func sendFinalMetrics(store *agent.Store, wp *workerPool, pubKey *rsa.PublicKey) {
 	gauges, counters := store.Snapshot()
 
 	var batch []model.Metrics
@@ -356,7 +331,7 @@ func sendFinalMetricses(store *agent.Store, wp *workerPool, pubKey *rsa.PublicKe
 	}
 
 	fmt.Printf("Sending final batch with %d metrics\n", len(batch))
-	if err := sendBatch(wp.client, wp.baseURL, batch, pubKey, wp.agentIP); err != nil {
+	if err := sendBatch(wp.client, wp.baseURL, batch, pubKey, wp.agentIP, wp.secretKey); err != nil {
 		fmt.Printf("Failed to send final batch: %v\n", err)
 	} else {
 		fmt.Printf("Successfully sent final batch with %d metrics\n", len(batch))
@@ -366,15 +341,18 @@ func sendFinalMetricses(store *agent.Store, wp *workerPool, pubKey *rsa.PublicKe
 func main() {
 	printBuildInfo()
 
-	config.ParseFlags()
+	cfg, err := config.NewLoader(nil).Load()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
 
-	serverAddress := config.ServerAddress()
-	reportDuration := time.Duration(config.ReportInterval()) * time.Second
-	pollDuration := time.Duration(config.PollInterval()) * time.Second
-	rateLimit := config.RateLimit()
-	cryptoKeyPath := config.CryptoKey()
-	useGRPC := config.ShouldUseGRPC()
-	grpcAddress := config.GRPCAddress()
+	serverAddress := cfg.ServerAddress()
+	reportDuration := time.Duration(cfg.ReportInterval) * time.Second
+	pollDuration := time.Duration(cfg.PollInterval) * time.Second
+	rateLimit := cfg.RateLimit
+	cryptoKeyPath := cfg.CryptoKey
+	useGRPC := cfg.UseGRPC
+	grpcAddress := cfg.GRPCAddress
 
 	if !strings.HasPrefix(serverAddress, "http://") && !strings.HasPrefix(serverAddress, "https://") {
 		serverAddress = "http://" + serverAddress
@@ -406,7 +384,7 @@ func main() {
 	if useGRPC {
 		runGRPCAgent(grpcAddress, agentIP, store, reportDuration, stopCollect)
 	} else {
-		runHTTPAgent(serverAddress, agentIP, store, reportDuration, stopCollect, pubKey, rateLimit)
+		runHTTPAgent(serverAddress, agentIP, store, reportDuration, stopCollect, pubKey, rateLimit, cfg.Key)
 	}
 }
 
@@ -441,17 +419,17 @@ func runGRPCAgent(grpcAddress, agentIP string, store *agent.Store, reportDuratio
 	time.Sleep(100 * time.Millisecond)
 
 	// Отправляем финальный снимок метрик через gRPC
-	sendFinalMetricsesGRPC(grpcClient, store)
+	sendFinalMetricsGRPC(grpcClient, store)
 
 	fmt.Println("Agent stopped gracefully")
 }
 
 // runHTTPAgent запускает агент с HTTP-транспортом
-func runHTTPAgent(serverAddress, agentIP string, store *agent.Store, reportDuration time.Duration, stopCollect chan struct{}, pubKey *rsa.PublicKey, rateLimit int) {
+func runHTTPAgent(serverAddress, agentIP string, store *agent.Store, reportDuration time.Duration, stopCollect chan struct{}, pubKey *rsa.PublicKey, rateLimit int, secretKey string) {
 	client := &http.Client{}
 
 	// Запускаем worker pool
-	wp := newWorkerPool(rateLimit, client, serverAddress, agentIP)
+	wp := newWorkerPool(rateLimit, client, serverAddress, agentIP, secretKey)
 	wp.Start()
 
 	// Запускаем отправителя
@@ -471,7 +449,7 @@ func runHTTPAgent(serverAddress, agentIP string, store *agent.Store, reportDurat
 	time.Sleep(100 * time.Millisecond)
 
 	// Отправляем финальный снимок метрик
-	sendFinalMetricses(store, wp, pubKey)
+	sendFinalMetrics(store, wp, pubKey)
 
 	// Останавливаем worker pool
 	wp.Stop()
@@ -481,18 +459,7 @@ func runHTTPAgent(serverAddress, agentIP string, store *agent.Store, reportDurat
 
 // getLocalIP возвращает IP-адрес хоста
 func getLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return ""
-	}
-	for _, addr := range addrs {
-		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
-			if ipNet.IP.To4() != nil {
-				return ipNet.IP.String()
-			}
-		}
-	}
-	return ""
+	return netutil.LocalIP()
 }
 
 func printBuildInfo() {

@@ -16,7 +16,7 @@ import (
 	"github.com/rs/zerolog/hlog"
 )
 
-func setupRouter(handler *handlers.MetricsHandler, privKey *rsa.PrivateKey) http.Handler {
+func setupRouter(handler *handlers.MetricsHandler, privKey *rsa.PrivateKey, cfg *config.Config) http.Handler {
 	r := chi.NewRouter()
 
 	// Логирование
@@ -35,11 +35,11 @@ func setupRouter(handler *handlers.MetricsHandler, privKey *rsa.PrivateKey) http
 	r.Use(middleware.GzipMiddleware)
 
 	// Подключаем middleware для проверки хеша (после gzip — хеш от распакованного тела)
-	secretKey := config.GetSecretKey()
+	secretKey := cfg.Key
 	r.Use(middleware.HashMiddleware(secretKey))
 
 	// Подключаем middleware для проверки доверенной подсети
-	trustedSubnet := config.TrustedSubnet()
+	trustedSubnet := cfg.TrustedSubnet
 	r.Use(middleware.TrustedSubnetMiddleware(trustedSubnet))
 
 	// Маршруты

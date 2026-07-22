@@ -34,18 +34,23 @@ func main() {
 	zerolog.TimeFieldFormat = "2006-01-02T15:04:05Z07:00"
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 
-	config.ParseFlags()
+	cfg, err := config.NewLoader(nil).Load()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
 
-	addr := config.ServerAddress()
-	config.ValidateServerAddress()
+	addr := cfg.ServerAddress()
+	if err := cfg.Validate(); err != nil {
+		log.Fatal(err)
+	}
 
-	store := storage.NewStorage()
+	store := storage.NewStorage(cfg.DatabaseDSN, cfg.StoreFile, cfg.StoreInterval, cfg.ShouldRestore())
 
 	// Загружаем приватный ключ, если указан
 	var privKey *rsa.PrivateKey
-	if cryptoKeyPath := config.CryptoKey(); cryptoKeyPath != "" {
+	if cfg.CryptoKey != "" {
 		var err error
-		privKey, err = crypto.LoadPrivateKey(cryptoKeyPath)
+		privKey, err = crypto.LoadPrivateKey(cfg.CryptoKey)
 		if err != nil {
 			log.Fatalf("Failed to load private key: %v", err)
 		}
@@ -53,11 +58,11 @@ func main() {
 	}
 
 	// Создаём нотификатор аудита
-	notifier := setupAuditNotifier()
+	notifier := setupAuditNotifier(cfg)
 
 	handler := handlers.NewMetricsHandler(store, notifier)
 
-	router := setupRouter(handler, privKey)
+	router := setupRouter(handler, privKey, cfg)
 
 	srv := &http.Server{
 		Addr:    addr,
@@ -67,14 +72,14 @@ func main() {
 	// Запускаем gRPC-сервер, если указан адрес
 	var grpcSrv *grpc.Server
 	var grpcAddr string
-	if grpcAddress := config.GRPCAddress(); grpcAddress != "" {
-		grpcService := grpcservice.NewMetricsService(store)
+	if cfg.GRPCAddress != "" {
+		grpcService := grpcservice.NewMetricsService(store, cfg.TrustedSubnet)
 		grpcSrv = grpc.NewServer(
 			grpc.UnaryInterceptor(grpcService.UnaryServerInterceptor()),
 		)
 		grpcService.Register(grpcSrv)
 
-		grpcAddr = grpcAddress
+		grpcAddr = cfg.GRPCAddress
 		go func() {
 			lis, err := net.Listen("tcp", grpcAddr)
 			if err != nil {
@@ -133,10 +138,10 @@ func main() {
 }
 
 // setupAuditNotifier создаёт и настраивает нотификатор аудита
-func setupAuditNotifier() *audit.Notifier {
+func setupAuditNotifier(cfg *config.Config) *audit.Notifier {
 	notifier := audit.NewNotifier()
 
-	if file := config.AuditFile(); file != "" {
+	if file := cfg.AuditFile; file != "" {
 		obs, err := audit.NewFileObserver(file)
 		if err != nil {
 			log.Printf("Failed to create file observer for %s: %v", file, err)
@@ -146,7 +151,7 @@ func setupAuditNotifier() *audit.Notifier {
 		}
 	}
 
-	if url := config.AuditURL(); url != "" {
+	if url := cfg.AuditURL; url != "" {
 		notifier.AddObserver(audit.NewHTTPObserver(url))
 		log.Printf("Audit HTTP observer enabled: %s", url)
 	}
