@@ -1,59 +1,170 @@
-// cmd/server/main.go
 package main
 
 import (
-	"flag"
+	"context"
+	"crypto/rsa"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/GAV777/httpmetricalert/internal/audit"
+	"github.com/GAV777/httpmetricalert/internal/config"
+	grpcservice "github.com/GAV777/httpmetricalert/internal/grpc"
 	"github.com/GAV777/httpmetricalert/internal/handlers"
 	"github.com/GAV777/httpmetricalert/internal/storage"
-	"log"
-	"net/http"
-	"strings"
-
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	"github.com/GAV777/httpmetricalert/pkg/crypto"
+	"github.com/rs/zerolog"
+	"google.golang.org/grpc"
 )
 
-// === Middleware для блокировки путей с двойными слешами ===
-func noDoubleSlashes(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "//") {
-			http.Error(w, "Not Found", http.StatusNotFound)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
+var (
+	buildVersion = "N/A"
+	buildDate    = "N/A"
+	buildCommit  = "N/A"
+)
 
-// === Основная функция — ТОЧКА ВХОДА ===
 func main() {
-	addr := flag.String("a", "localhost:8080", "адрес эндпоинта HTTP-сервера")
-	flag.Parse()
+	printBuildInfo()
 
-	if len(flag.Args()) > 0 {
-		log.Fatalf("неизвестные аргументы командной строки: %v", flag.Args())
+	// Инициализация логгера
+	zerolog.TimeFieldFormat = "2006-01-02T15:04:05Z07:00"
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+
+	cfg, err := config.NewLoader(nil).Load()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Создаём хранилище
-	storage := storage.NewMemStorage()
+	addr := cfg.ServerAddress()
+	if err := cfg.Validate(); err != nil {
+		log.Fatal(err)
+	}
 
-	// Создаём хендлеры с внедрением зависимости
-	handler := handlers.NewMetricsHandler(storage)
+	store := storage.NewStorage(cfg.DatabaseDSN, cfg.StoreFile, cfg.StoreInterval, cfg.ShouldRestore())
 
-	r := chi.NewRouter()
+	// Загружаем приватный ключ, если указан
+	var privKey *rsa.PrivateKey
+	if cfg.CryptoKey != "" {
+		var err error
+		privKey, err = crypto.LoadPrivateKey(cfg.CryptoKey)
+		if err != nil {
+			log.Fatalf("Failed to load private key: %v", err)
+		}
+		log.Println("RSA decryption enabled")
+	}
 
-	r.Use(middleware.Recoverer)
-	r.Use(noDoubleSlashes)
+	// Создаём нотификатор аудита
+	notifier := setupAuditNotifier(cfg)
 
-	// Маршруты
-	r.Post("/update/{type}/{name}/{value}", handler.UpdateHandler)
-	r.Get("/value/{type}/{name}", handler.GetValueHandler)
-	r.Get("/", handler.ListMetricsHandler)
+	handler := handlers.NewMetricsHandler(store, notifier)
 
-	// Глобальный 404
-	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "Not Found", http.StatusNotFound)
-	})
+	router := setupRouter(handler, privKey, cfg)
 
-	log.Printf("🚀 Starting server on %s", *addr)
-	log.Fatal(http.ListenAndServe(*addr, r))
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: router,
+	}
+
+	// Запускаем gRPC-сервер, если указан адрес
+	var grpcSrv *grpc.Server
+	var grpcAddr string
+	if cfg.GRPCAddress != "" {
+		grpcService := grpcservice.NewMetricsService(store, cfg.TrustedSubnet)
+		grpcSrv = grpc.NewServer(
+			grpc.UnaryInterceptor(grpcService.UnaryServerInterceptor()),
+		)
+		grpcService.Register(grpcSrv)
+
+		grpcAddr = cfg.GRPCAddress
+		go func() {
+			lis, err := net.Listen("tcp", grpcAddr)
+			if err != nil {
+				log.Printf("gRPC server failed: %v", err)
+				return
+			}
+			log.Printf("Starting gRPC server on %s", grpcAddr)
+			if err := grpcSrv.Serve(lis); err != nil {
+				log.Printf("gRPC server failed: %v", err)
+			}
+		}()
+	}
+
+	// Канал для сигналов завершения
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+
+	// Запускаем сервер в горутине
+	go func() {
+		log.Printf("Starting server on %s", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
+
+	// Ждём сигнал завершения
+	sig := <-sigCh
+	log.Printf("Received signal: %v", sig)
+
+	// Graceful shutdown: даём 30с на завершение in-flight запросов
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	log.Println("Shutting down server...")
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Server forced to shutdown: %v", err)
+	}
+
+	// Graceful shutdown gRPC-сервера
+	if grpcSrv != nil {
+		log.Println("Shutting down gRPC server...")
+		grpcSrv.GracefulStop()
+		log.Println("gRPC server stopped")
+	}
+
+	// Финальное сохранение и очистка ресурсов
+	if err := store.Close(); err != nil {
+		log.Printf("Failed to close storage: %v", err)
+	}
+	log.Println("Storage closed")
+
+	notifier.Close()
+	log.Println("Audit notifier closed")
+
+	log.Println("Server stopped gracefully")
+}
+
+// setupAuditNotifier создаёт и настраивает нотификатор аудита
+func setupAuditNotifier(cfg *config.Config) *audit.Notifier {
+	notifier := audit.NewNotifier()
+
+	if file := cfg.AuditFile; file != "" {
+		obs, err := audit.NewFileObserver(file)
+		if err != nil {
+			log.Printf("Failed to create file observer for %s: %v", file, err)
+		} else {
+			notifier.AddObserver(obs)
+			log.Printf("Audit file observer enabled: %s", file)
+		}
+	}
+
+	if url := cfg.AuditURL; url != "" {
+		notifier.AddObserver(audit.NewHTTPObserver(url))
+		log.Printf("Audit HTTP observer enabled: %s", url)
+	}
+
+	if !notifier.HasObservers() {
+		log.Println("Audit disabled (no --audit-file or --audit-url configured)")
+	}
+
+	return notifier
+}
+
+func printBuildInfo() {
+	log.Printf("Build version: %s\n", buildVersion)
+	log.Printf("Build date: %s\n", buildDate)
+	log.Printf("Build commit: %s\n", buildCommit)
 }
